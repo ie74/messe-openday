@@ -4,7 +4,13 @@ const CFG = {
   BACKEND: false,            // metti true quando il backend è pronto
   API: '',                   // es. 'https://tuo-server.it'
   VAPID: '',                 // chiave pubblica VAPID per le push
-  ROLES: ['Accoglienza', 'Percorsi', 'Logistica', 'Sicurezza', 'Staff']
+  ADMIN: 'Admin',
+  // Ogni gruppo può avere delle unità. Una voce che punta al gruppo ("Aula")
+  // la vede tutto il gruppo, anche chi sta in una sola unità.
+  GROUPS: [
+    { label: 'Corridoio', units: [] },
+    { label: 'Aula', units: ['Aula 1', 'Aula 2', 'Aula 3', 'Aula 4', 'Aula 5', 'Aula 6', 'Aula 7', 'Aula 8'] }
+  ]
 };
 
 /* ---------- Utilità ---------- */
@@ -17,8 +23,9 @@ const store = {
   del(k) { try { localStorage.removeItem(k); } catch { } }
 };
 const fmt = d => d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
-const mapUrl = p => 'https://www.google.com/maps/search/?api=1&query=' +
-  encodeURIComponent(p.lat != null ? p.lat + ',' + p.lng : p.name);
+// L'orologio mostra anche i secondi, per capire che è vivo. Gli orari del
+// programma restano al minuto: secondi lì non servono e affollerebbero la lista.
+const fmtOrologio = d => `${fmt(d)}<small>${String(d.getSeconds()).padStart(2, '0')}</small>`;
 
 /* ---------- Rilevamento ambiente (?m=1 e ?s=1 forzano mobile/installata per i test) ---------- */
 const q = new URLSearchParams(location.search), ua = navigator.userAgent;
@@ -28,9 +35,87 @@ const env = {
   mobile: q.has('m') || /Android|iPhone|iPad|iPod/.test(ua) || ipad,
   standalone: q.has('s') || matchMedia('(display-mode: standalone)').matches || navigator.standalone === true
 };
-const S = { role: store.get('role'), token: store.get('token'), showAll: false, items: [], sig: '' };
+const S = { role: store.get('role'), token: store.get('token'), items: [], sig: '' };
 let installEvt = null;
 addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; $('#inst')?.removeAttribute('hidden'); });
+
+/* ---------- Ruoli ---------- */
+const GROUPS = CFG.GROUPS;
+const GROUP_LABEL = new Set(GROUPS.map(g => g.label));   // i nomi che sono gruppi
+const GROUP_OF = new Map(); // ruolo -> gruppo
+GROUPS.forEach(g => {
+  GROUP_OF.set(g.label, g.label);
+  g.units.forEach(u => GROUP_OF.set(u, g.label));
+});
+
+// Ruolo salvato da una versione precedente (es. "Staff"): non esiste più, ripartiamo puliti.
+if (S.role && S.role !== CFG.ADMIN && !GROUP_OF.has(S.role)) {
+  S.role = null; S.token = null;
+  store.del('role'); store.del('token');
+}
+
+// "Corridoio" la vede chi è in Corridoio, "Aula 3" solo chi è in Aula 3,
+// "Aula" la vedono tutte e otto perché è il nome del gruppo.
+const roleMatches = r => r === S.role || (GROUP_LABEL.has(r) && GROUP_OF.get(r) === GROUP_OF.get(S.role));
+const visible = i => S.role === CFG.ADMIN || !i.roles?.length || i.roles.some(roleMatches);
+const isGroup = r => S.role && GROUP_OF.get(r) === GROUP_OF.get(S.role);
+
+/* ---------- Tappe e collegamenti ---------- */
+// Una tappa è un luogo. Ogni collegamento si può percorrere in entrambi i
+// sensi, e i laboratori sono raggiungibili solo dalla scala indicata: è il
+// grafo a imporre la strada, non il testo.
+// (Con il backend, tappe e collegamenti arriveranno con il resto del programma.)
+const SCALE = ['Scala A1-A2', 'Scala B1-B2'];
+const LAB = ['Laboratorio 1', 'Laboratorio 2', 'Laboratorio 3'];
+
+// Elenco di riferimento dei posti, più leggibile dei soli collegamenti.
+const TAPPE = ['Ingresso A', 'Corridoio centrale', 'Sala principale', 'Deposito materiali', ...SCALE, ...LAB, ...GROUPS.flatMap(g => g.units)];
+
+// Da dove parte ognuno: chi è in un'aula parte dalla propria, chi è in
+// corridoio dall'ingresso. Per l'admin non ha senso, non ha una partenza.
+const PARTENZA = { 'Corridoio': 'Ingresso A', 'Aula': '@Aula' };
+
+const LINK = [
+  { da: 'Ingresso A', a: 'Corridoio centrale', come: 'Tieni la destra, i cartelli blu' },
+  { da: 'Ingresso A', a: 'Sala principale', come: 'A destra, oltre la porta vetrata' },
+  { da: 'Corridoio centrale', a: 'Sala principale', come: 'Oltre il bancone della reception' },
+  { da: 'Corridoio centrale', a: 'Deposito materiali', come: 'In fondo a sinistra' },
+
+  // Le scale: due sole, e i laboratori stanno su una o sull'altra.
+  { da: 'Corridoio centrale', a: 'Scala A1-A2', come: 'In fondo al corridoio, a sinistra' },
+  { da: 'Corridoio centrale', a: 'Scala B1-B2', come: 'Sul lato opposto del corridoio' },
+  { da: 'Scala A1-A2', a: 'Laboratorio 1', come: 'Piano A1, prima porta a destra' },
+  { da: 'Scala A1-A2', a: 'Laboratorio 2', come: 'Salendo, piano A2, in fondo' },
+  { da: 'Scala B1-B2', a: 'Laboratorio 3', come: 'Piano B1, a sinistra' },
+
+  // Ogni aula si raggiunge dal corridoio centrale.
+  ...GROUPS.flatMap(g => g.units.map(u => ({ da: 'Corridoio centrale', a: u, come: 'Segui i cartelli col numero dell\'aula' })))
+];
+
+// '@Aula' = la tappa in cui ti trovi: per chi è in Aula 3 è Aula 3. Per l'admin,
+// che non sta in una stanza sola, resta il nome del gruppo.
+const risolvi = t => t?.[0] !== '@' ? t
+  : S.role === CFG.ADMIN ? t.slice(1) + ' (tutte)'
+    : GROUP_OF.get(S.role) === t.slice(1) ? S.role : t;
+
+// Cammino minimo fra due tappe: un hop per ogni collegamento attraversato.
+// Ritorna i passi da fare, o null se le due tappe sono la stessa o non collegate.
+function percorso(da, a) {
+  if (!da || !a || da === a) return null;
+  const coda = [{ tappa: da, passi: [] }], visto = new Set([da]);
+  while (coda.length) {
+    const { tappa, passi } = coda.shift();
+    if (tappa === a) return passi;
+    for (const l of LINK) {
+      if (l.da !== tappa && l.a !== tappa) continue;
+      const prossimo = l.da === tappa ? l.a : l.da;
+      if (visto.has(prossimo)) continue;
+      visto.add(prossimo);
+      coda.push({ tappa: prossimo, passi: [...passi, { tappa: prossimo, come: l.come }] });
+    }
+  }
+  return null;
+}
 
 /* ---------- Avvio ---------- */
 async function boot() {
@@ -103,19 +188,32 @@ async function subscribePush() {
 
 /* ---------- Scelta ruolo e login admin ---------- */
 function showRoles() {
-  screen.innerHTML = `<div class="wrap"><h1>Scegli il tuo ruolo</h1>
-    <p class="mut">Vedrai solo orari e avvisi che ti riguardano. Puoi cambiarlo quando vuoi.</p>
-    <div class="roles">${CFG.ROLES.map(r => `<button class="role${r === S.role ? ' on' : ''}" data-r="${esc(r)}">${esc(r)}</button>`).join('')}</div>
+  screen.innerHTML = `<div class="wrap"><h1>Dove lavori?</h1>
+    <p class="mut">Vedrai solo gli orari e gli avvisi che ti riguardano. Puoi cambiarlo quando vuoi.</p>
+    <div class="roles">${GROUPS.map(g => `<button class="role${isGroup(g.label) ? ' on' : ''}" data-g="${esc(g.label)}">${esc(g.label)}${g.units.length ? `<small>${g.units.length} aule</small>` : ''}</button>`).join('')}</div>
     <button class="btn ghost" id="adm">Sono un admin</button><div id="admbox"></div>
     ${S.role ? '<button class="btn ghost" id="back">Torna al programma</button>' : ''}</div>`;
-  screen.querySelectorAll('.role').forEach(b => b.onclick = () => setRole(b.dataset.r));
+  screen.querySelectorAll('.role').forEach(b => b.onclick = () => {
+    const g = GROUPS.find(x => x.label === b.dataset.g);
+    g.units.length ? showUnits(g) : setRole(g.label);
+  });
   $('#back')?.addEventListener('click', showTimeline);
   $('#adm').onclick = adminForm;
 }
 
+/* ---------- Scelta dell'unita dentro un gruppo ---------- */
+function showUnits(g) {
+  screen.innerHTML = `<div class="wrap"><h1>${esc(g.label)}</h1>
+    <p class="mut">Scegli la tua aula: gli orari e gli avvisi saranno solo quelli.</p>
+    <div class="roles">${g.units.map(u => `<button class="role${u === S.role ? ' on' : ''}" data-u="${esc(u)}">${esc(u)}</button>`).join('')}</div>
+    <button class="btn ghost" id="back">Torna indietro</button></div>`;
+  screen.querySelectorAll('.role').forEach(b => b.onclick = () => setRole(b.dataset.u));
+  $('#back').onclick = showRoles;
+}
+
 function setRole(r) {
   S.role = r; store.set('role', r);
-  if (r !== 'Admin') { S.token = null; store.del('token'); }
+  if (r !== CFG.ADMIN) { S.token = null; store.del('token'); }
   subscribePush();                       // aggiorna il ruolo sul server
   showTimeline();
 }
@@ -134,7 +232,7 @@ function adminForm() {
         body: JSON.stringify({ password: $('#pw').value })
       });
       if (!r.ok) throw 0;
-      S.token = (await r.json()).token; store.set('token', S.token); setRole('Admin');
+      S.token = (await r.json()).token; store.set('token', S.token); setRole(CFG.ADMIN);
     } catch { err.textContent = 'Password errata o server non raggiungibile.'; }
   };
 }
@@ -143,11 +241,20 @@ function adminForm() {
 function demoItems() {
   const t = m => new Date(Date.now() + m * 6e4).toISOString();
   return [
-    { id: 1, start: t(-120), end: t(-75), title: 'Briefing generale', roles: [], place: { name: 'Sala principale' }, route: ['Ingresso A', 'Seguire i cartelli blu'], notes: 'Badge obbligatorio.' },
-    { id: 2, start: t(-40), end: t(20), title: 'Allestimento postazioni', roles: ['Logistica', 'Staff'], place: { name: 'Area carico' }, route: ['Uscire dal retro', 'Girare a destra', 'Cancello 2'] },
-    { id: 3, start: t(35), end: t(80), title: 'Apertura accrediti', roles: ['Accoglienza'], place: { name: 'Desk accrediti' }, route: ['Hall centrale', 'Desk a sinistra dell\'ingresso'] },
-    { id: 4, start: t(60), title: 'Presidio percorso nord', roles: ['Percorsi', 'Sicurezza'], place: { name: 'Punto di controllo 1' }, route: ['Seguire il tracciato giallo', 'Fermarsi al secondo incrocio'], notes: 'Radio sul canale 2.' },
-    { id: 5, start: t(150), end: t(210), title: 'Chiusura e rientro', roles: [], place: { name: 'Sala principale' }, route: ['Rientro dal percorso più breve'] }
+    // Aula: ognuno parte dalla propria, e '@Aula' vuol dire proprio quella.
+    { id: 1, start: t(-120), end: t(-75), title: 'Preparazione aula', roles: ['Aula'], tappa: '@Aula', notes: 'Controlla banchi e materiali, poi apri le porte.' },
+    { id: 2, start: t(-40), end: t(20), title: 'Raccolta al corridoio centrale', roles: ['Aula'], tappa: 'Corridoio centrale', notes: 'Aspetta i cartelli verdi.' },
+
+    // Corridoio: gli stessi compiti, ma senza una aula o un laboratorio fisso.
+    { id: 3, start: t(-120), end: t(-75), title: 'Briefing e consegna turni', roles: ['Corridoio'], tappa: 'Ingresso A' },
+    { id: 4, start: t(35), end: t(80), title: 'Affiancamento ai laboratori', roles: ['Corridoio'], tappa: 'Corridoio centrale', notes: 'Di sezione in sezione: non resti in un laboratorio solo.' },
+
+    // Laboratori: ognuno si raggiunge solo dalla sua scala.
+    { id: 5, start: t(35), end: t(80), title: 'Laboratorio 1', roles: ['Aula 1', 'Aula 2'], tappa: 'Laboratorio 1' },
+    { id: 6, start: t(35), end: t(80), title: 'Laboratorio 2', roles: ['Aula 3', 'Aula 4', 'Aula 5'], tappa: 'Laboratorio 2', notes: 'Aule riunite, si conta sui banchi.' },
+    { id: 7, start: t(35), end: t(80), title: 'Laboratorio 3', roles: ['Aula 6', 'Aula 7', 'Aula 8'], tappa: 'Laboratorio 3' },
+
+    { id: 8, start: t(150), end: t(210), title: 'Rientro e chiusura', roles: [], tappa: 'Ingresso A', notes: 'Badge e radio restituite al presidio.' }
   ];
 }
 
@@ -162,8 +269,6 @@ async function loadItems() {
   return { items: demoItems(), demo: true };
 }
 
-const visible = i => S.role === 'Admin' || S.showAll || !i.roles?.length || i.roles.includes(S.role);
-
 function status(i, k, nextIdx, now) {
   const s = new Date(i.start), e = i.end ? new Date(i.end) : null;
   if (now >= (e ?? s) && (e || now >= s)) return 'past';
@@ -171,33 +276,58 @@ function status(i, k, nextIdx, now) {
   return k === nextIdx ? 'next' : 'later';
 }
 
+/* ---------- Righe dell'itinerario: nodi, tratti e tappe attraversate ---------- */
+// Nodo: una voce del programma, con pallino e orario.
+const rigoNodo = (i, c, tappa) => {
+  const s = new Date(i.start), e = i.end ? new Date(i.end) : null;
+  return `<li class="it ${c}"><div class="tm">${fmt(s)}${e ? `<small>fino ${fmt(e)}</small>` : ''}</div><div class="rail"></div>
+    <div class="nd"><h3>${esc(i.title)}${c === 'now' ? '<span class="pill">Adesso</span>' : c === 'next' ? '<span class="pill">Dopo</span>' : ''}</h3>
+    ${tappa ? `<p class="loc">${esc(tappa)}</p>` : ''}
+    ${i.notes ? `<p class="mut">${esc(i.notes)}</p>` : ''}</div></li>`;
+};
+
+// Tratto: il pezzo di linea fra due tappe, con l'istruzione per attraversarlo.
+const rigoTratto = (come, avviso) => `<li class="leg${avviso ? ' bad' : ''}"><div class="tm"></div><div class="rail"></div>
+  <div class="legtxt">${esc(come)}</div></li>`;
+
+// Tappa attraversata: un nodo, ma senza orario e senza testo.
+const rigoTappa = t => `<li class="pass"><div class="tm"></div><div class="rail"></div><div class="nd">${esc(t)}</div></li>`;
+
 function renderList(scroll) {
   const now = new Date(), items = S.items.filter(visible).sort((a, b) => new Date(a.start) - new Date(b.start));
   const nextIdx = items.findIndex(i => new Date(i.start) > now);
   const st = items.map((i, k) => status(i, k, nextIdx, now));
-  const sig = st.join() + S.showAll + S.role;
-  $('#clock').textContent = fmt(now);
-  if (sig === S.sig && !scroll) return;       // niente re-render se non cambia nulla (non chiude i percorsi aperti)
+  const sig = st.join() + S.role;
+  if (sig === S.sig && !scroll) return;       // niente re-render se non cambia nulla
   S.sig = sig;
+  const inizio = PARTENZA[GROUP_OF.get(S.role)];   // l'admin non ha una partenza
+  let da = inizio ? risolvi(inizio) : null;
   $('#tl').innerHTML = items.map((i, k) => {
-    const s = new Date(i.start), e = i.end ? new Date(i.end) : null, c = st[k];
-    return `<li class="it ${c}"><div class="tm">${fmt(s)}${e ? `<small>fino alle ${fmt(e)}</small>` : ''}</div><div>
-      <h3>${esc(i.title)}${c === 'now' ? '<span class="pill">Adesso</span>' : c === 'next' ? '<span class="pill">Dopo</span>' : ''}</h3>
-      ${i.place ? `<a class="loc" href="${mapUrl(i.place)}" target="_blank" rel="noopener">${esc(i.place.name)} – apri in Mappe</a>` : ''}
-      ${i.route?.length ? `<details ${c === 'now' || c === 'next' ? 'open' : ''}><summary>Percorso, ${i.route.length} passi</summary><ol>${i.route.map(p => `<li>${esc(p)}</li>`).join('')}</ol></details>` : ''}
-      ${i.notes ? `<p class="mut">${esc(i.notes)}</p>` : ''}</div></li>`;
-  }).join('') || '<li class="it"><p class="mut">Nessuna voce per il tuo ruolo.</p></li>';
+    const c = st[k], tappa = risolvi(i.tappa), da0 = da, via = percorso(da, tappa);
+    if (tappa) da = tappa;
+    // Fra una voce e la successiva si disegna il tratto: le istruzioni stanno
+    // in mezzo, e ogni tappa attraversata diventa a sua volta un nodo.
+    const tratto = via ? via.map(v => rigoTratto(v.come) + rigoTappa(v.tappa)).join('')
+      : da0 && tappa && da0 !== tappa ? rigoTratto(`Nessun collegamento da ${da0} a ${tappa}: chiedi al coordinatore.`, true)
+        : '';
+    return tratto + rigoNodo(i, c, tappa);
+  }).join('') || '<li class="vuoto">Nessuna voce per il tuo ruolo.</li>';
   if (scroll) $('.it.now, .it.next')?.scrollIntoView({ block: 'center' });
 }
+
+// Un timer solo: l'orologio gira ogni secondo, la lista si ridisegna solo
+// quando gli stati cambiano davvero (ci pensa la firma in renderList).
+const batto = () => {
+  $('#clock').innerHTML = fmtOrologio(new Date());
+  renderList(false);
+};
 
 async function showTimeline() {
   screen.innerHTML = `<header class="top"><b id="clock"></b><button class="chip" id="chg">${esc(S.role)}, cambia</button></header>
     <div class="wrap"><div id="banner"></div>
-    <label class="sw"><input type="checkbox" id="all" ${S.showAll ? 'checked' : ''}> Mostra tutto il programma</label>
     <ol class="tl" id="tl"></ol>
     ${env.mobile ? '<button class="btn ghost" id="test">Invia notifica di prova</button>' : ''}</div>`;
   $('#chg').onclick = showRoles;
-  $('#all').onchange = e => { S.showAll = e.target.checked; renderList(false); };
   $('#test')?.addEventListener('click', async () => {
     const reg = await navigator.serviceWorker.ready;
     reg.showNotification('Notifica di prova', { body: 'Se leggi questo, sei a posto.', icon: 'icon-192.png' });
@@ -207,7 +337,8 @@ async function showTimeline() {
   $('#banner').innerHTML = d.demo ? '<div class="banner">Dati di esempio: il backend non è ancora collegato.</div>'
     : d.stale ? '<div class="banner">Sei offline: vedi l\'ultimo programma salvato.</div>' : '';
   renderList(true);
-  clearInterval(S.timer); S.timer = setInterval(() => renderList(false), 30000);
+  batto();                                        // primo disegno dell'orologio
+  clearInterval(S.timer); S.timer = setInterval(batto, 1000);
 }
 
 boot();

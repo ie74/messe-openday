@@ -94,7 +94,7 @@ h2 {
 
 .roles {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
     gap: 10px;
     margin: 22px 0 6px
 }
@@ -115,6 +115,14 @@ h2 {
     border-color: var(--sig);
     background: var(--sig);
     color: var(--ink)
+}
+
+.role small {
+    display: block;
+    margin-top: 4px;
+    font-weight: 500;
+    font-size: .82rem;
+    opacity: .7
 }
 
 form.box {
@@ -152,6 +160,11 @@ input[type=password] {
     font-variant-numeric: tabular-nums
 }
 
+.top b small {
+    font-size: .62em;
+    color: var(--mut)
+}
+
 .chip {
     border: 2px solid var(--line);
     background: transparent;
@@ -171,29 +184,63 @@ input[type=password] {
     font-size: .92rem
 }
 
-.sw {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-    color: var(--mut);
-    margin-bottom: 10px
-}
-
+/* ---------- Itinerario: nodi e tratti sulla stessa linea verticale ---------- */
 .tl {
     list-style: none;
-    padding: 0
+    padding: 0;
+    --rail: 78px;
+    --col: 20px
 }
 
-.it {
+/* Nodo, tratto e tappa attraversata stanno sulla stessa griglia: così la linea
+   verticale passa da una riga all'altra senza mai interrompersi. */
+.it,
+.leg,
+.pass {
     display: grid;
-    grid-template-columns: 74px 1fr;
-    gap: 14px;
-    padding: 16px 10px;
-    border-bottom: 1px solid var(--line)
+    grid-template-columns: var(--rail) var(--col) 1fr;
+    gap: 12px;
+    align-items: start
+}
+
+.rail {
+    position: relative;
+    align-self: stretch;
+    justify-self: center;
+    width: var(--col)
+}
+
+.rail::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 3px;
+    translate: -50% 0;
+    border-radius: 3px;
+    background: var(--line)
+}
+
+/* Ai due capi la linea parte e finisce sul pallino, senza scavalcarlo. */
+.tl > :first-child .rail::before {
+    top: 21px
+}
+
+.tl > :last-child .rail::before {
+    bottom: auto;
+    height: 21px
+}
+
+/* --- Nodo: una voce del programma --- */
+.it {
+    padding: 5px 0
 }
 
 .tm {
-    font-size: 1.5rem;
+    padding-top: 8px;
+    text-align: right;
+    font-size: 1.3rem;
     font-weight: 800;
     font-variant-numeric: tabular-nums;
     line-height: 1.1
@@ -201,7 +248,7 @@ input[type=password] {
 
 .tm small {
     display: block;
-    font-size: .85rem;
+    font-size: .76rem;
     font-weight: 500;
     color: var(--mut)
 }
@@ -209,6 +256,10 @@ input[type=password] {
 .it h3 {
     font-size: 1.15rem;
     font-weight: 700
+}
+
+.it p {
+    margin-top: 8px
 }
 
 .pill {
@@ -224,48 +275,120 @@ input[type=password] {
 }
 
 .loc {
-    display: inline-block;
+    display: block;
     margin-top: 4px;
-    color: inherit;
     font-weight: 600
 }
 
-details {
-    margin-top: 8px
+/* --- Pallini --- */
+.it .rail::after {
+    content: '';
+    position: absolute;
+    top: 13px;
+    left: 50%;
+    translate: -50% 0;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: var(--bg);
+    border: 3px solid var(--line);
+    z-index: 1
 }
 
-summary {
-    cursor: pointer;
+.it.past .rail::after {
+    background: var(--line)
+}
+
+.it.next .rail::after {
+    border-color: var(--sig)
+}
+
+/* --- Tratto di percorso: la linea tratteggiata e l'istruzione in mezzo --- */
+.leg .rail::before,
+.pass .rail::before {
+    background: repeating-linear-gradient(var(--line) 0 5px, transparent 5px 11px)
+}
+
+.legtxt {
+    padding: 9px 0;
+    color: var(--mut);
+    font-size: .88rem;
+    line-height: 1.35
+}
+
+.legtxt::before {
+    content: '↓\00a0';
+    color: var(--sig);
+    font-weight: 800
+}
+
+/* --- Tappa attraversata: un nodo, ma senza orario --- */
+.pass .rail::after {
+    content: '';
+    position: absolute;
+    top: 14px;
+    left: 50%;
+    translate: -50% 0;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: var(--bg);
+    border: 2px solid var(--line);
+    z-index: 1
+}
+
+.pass .nd {
+    padding: 9px 0;
+    color: var(--mut);
+    font-weight: 700;
+    font-size: .92rem
+}
+
+/* --- Collegamento mancante: tratto in rosso, si nota subito --- */
+.leg.bad .rail::before {
+    background: repeating-linear-gradient(var(--bad) 0 5px, transparent 5px 11px)
+}
+
+.leg.bad .legtxt,
+.leg.bad .legtxt::before {
+    color: var(--bad)
+}
+
+.leg.bad .legtxt::before {
+    content: '!\00a0'
+}
+
+.vuoto {
+    padding: 24px 0;
     color: var(--mut)
 }
 
-details ol {
-    margin: 8px 0 0 1.3em;
-    display: grid;
-    gap: 4px
-}
-
-.it p {
-    margin-top: 8px
-}
-
+/* --- Stati --- */
 .past {
-    opacity: .45
+    opacity: .5
 }
 
-.next {
-    border-left: 5px solid var(--sig)
+.it.next .nd {
+    border-left: 5px solid var(--sig);
+    padding-left: 12px
 }
 
-.now {
+.it.now .nd {
     background: var(--sig);
     color: var(--ink);
-    border-radius: 8px;
-    border-bottom-color: transparent
+    border-radius: 10px;
+    padding: 10px 12px
+}
+
+.it.now .rail::after {
+    top: 12px;
+    width: 17px;
+    height: 17px;
+    background: var(--sig);
+    border-color: var(--sig)
 }
 
 .now .tm small,
-.now summary,
 .now .mut {
     color: #3b4a6e
 }
