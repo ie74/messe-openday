@@ -1,0 +1,289 @@
+:root {
+    --bg: #12326b;
+    --panel: #0c2250;
+    --line: #3a5ba0;
+    --tx: #f4f6fb;
+    --mut: #a9b9dc;
+    --sig: #ffd23f;
+    --ink: #10224a;
+    --bad: #ff8a7a;
+    color-scheme: dark
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0
+}
+
+[hidden] {
+    display: none !important
+}
+
+body {
+    background: var(--bg);
+    color: var(--tx);
+    font: 16px/1.45 "Avenir Next", "Segoe UI", system-ui, sans-serif;
+    min-height: 100dvh;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)
+}
+
+:focus-visible {
+    outline: 3px solid var(--sig);
+    outline-offset: 2px
+}
+
+.wrap {
+    max-width: 640px;
+    margin: 0 auto;
+    padding: 22px 18px 70px
+}
+
+.center {
+    padding-top: 10vh
+}
+
+h1 {
+    font-size: 2rem;
+    line-height: 1.1;
+    font-weight: 800;
+    letter-spacing: -.02em;
+    margin-bottom: 8px
+}
+
+h2 {
+    font-size: 1.4rem;
+    font-weight: 800;
+    margin-bottom: 8px
+}
+
+.mut {
+    color: var(--mut)
+}
+
+.bad {
+    color: var(--bad);
+    font-weight: 700
+}
+
+.btn {
+    display: block;
+    width: 100%;
+    padding: 15px 18px;
+    margin-top: 14px;
+    border: 0;
+    border-radius: 8px;
+    background: var(--sig);
+    color: var(--ink);
+    font: inherit;
+    font-weight: 800;
+    font-size: 1.05rem;
+    cursor: pointer
+}
+
+.btn.ghost {
+    background: transparent;
+    color: var(--tx);
+    border: 2px solid var(--line)
+}
+
+.steps {
+    margin: 22px 0 0 1.2em;
+    display: grid;
+    gap: 12px
+}
+
+.roles {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin: 22px 0 6px
+}
+
+.role {
+    padding: 18px 12px;
+    border: 2px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+    color: var(--tx);
+    font: inherit;
+    font-weight: 700;
+    text-align: left;
+    cursor: pointer
+}
+
+.role.on {
+    border-color: var(--sig);
+    background: var(--sig);
+    color: var(--ink)
+}
+
+form.box {
+    margin-top: 14px;
+    padding: 16px;
+    background: var(--panel);
+    border-radius: 8px
+}
+
+input[type=password] {
+    width: 100%;
+    padding: 12px;
+    margin-top: 6px;
+    border-radius: 6px;
+    border: 2px solid var(--line);
+    background: var(--bg);
+    color: var(--tx);
+    font: inherit
+}
+
+.top {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 18px;
+    background: var(--panel);
+    border-bottom: 2px solid var(--line)
+}
+
+.top b {
+    font-size: 1.5rem;
+    font-variant-numeric: tabular-nums
+}
+
+.chip {
+    border: 2px solid var(--line);
+    background: transparent;
+    color: var(--tx);
+    border-radius: 99px;
+    padding: 7px 14px;
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer
+}
+
+.banner {
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    border-left: 4px solid var(--sig);
+    background: var(--panel);
+    font-size: .92rem
+}
+
+.sw {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    color: var(--mut);
+    margin-bottom: 10px
+}
+
+.tl {
+    list-style: none;
+    padding: 0
+}
+
+.it {
+    display: grid;
+    grid-template-columns: 74px 1fr;
+    gap: 14px;
+    padding: 16px 10px;
+    border-bottom: 1px solid var(--line)
+}
+
+.tm {
+    font-size: 1.5rem;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1
+}
+
+.tm small {
+    display: block;
+    font-size: .85rem;
+    font-weight: 500;
+    color: var(--mut)
+}
+
+.it h3 {
+    font-size: 1.15rem;
+    font-weight: 700
+}
+
+.pill {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 9px;
+    border-radius: 99px;
+    font-size: .78rem;
+    font-weight: 800;
+    background: var(--ink);
+    color: var(--sig);
+    vertical-align: 2px
+}
+
+.loc {
+    display: inline-block;
+    margin-top: 4px;
+    color: inherit;
+    font-weight: 600
+}
+
+details {
+    margin-top: 8px
+}
+
+summary {
+    cursor: pointer;
+    color: var(--mut)
+}
+
+details ol {
+    margin: 8px 0 0 1.3em;
+    display: grid;
+    gap: 4px
+}
+
+.it p {
+    margin-top: 8px
+}
+
+.past {
+    opacity: .45
+}
+
+.next {
+    border-left: 5px solid var(--sig)
+}
+
+.now {
+    background: var(--sig);
+    color: var(--ink);
+    border-radius: 8px;
+    border-bottom-color: transparent
+}
+
+.now .tm small,
+.now summary,
+.now .mut {
+    color: #3b4a6e
+}
+
+#modal {
+    position: fixed;
+    inset: 0;
+    z-index: 9;
+    display: grid;
+    place-items: end center;
+    background: #000b;
+    backdrop-filter: blur(6px)
+}
+
+.sheet {
+    width: 100%;
+    max-width: 520px;
+    background: var(--panel);
+    border-radius: 20px 20px 0 0;
+    padding: 26px 22px calc(26px + env(safe-area-inset-bottom))
+}
