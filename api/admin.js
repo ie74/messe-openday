@@ -19,17 +19,17 @@ module.exports = async (req, res) => {
   if (!verificaToken(token)) return res.status(401).json({ errore: 'Token mancante o scaduto: rientra come admin.' });
 
   if (azione === 'salva') {
-    const { tappe, spostamenti } = req.body;
-    if (!Array.isArray(tappe) || !Array.isArray(spostamenti))
-      return res.status(400).json({ errore: 'Dati non validi.' });
-    // Niente spostamenti che puntano a una tappa cancellata: romperebbe il grafo.
-    const nomi = new Set(tappe.map(t => t.nome));
-    const rotto = spostamenti.find(s => !nomi.has(s.da) || !nomi.has(s.a));
-    if (rotto) return res.status(400).json({ errore: `Lo spostamento "${rotto.da} → ${rotto.a}" punta a una tappa inesistente.` });
+    const { fasce } = req.body;
+    if (!Array.isArray(fasce)) return res.status(400).json({ errore: 'Dati non validi.' });
+    // Una riga sola per squadra: con due, quale vinca dipenderebbe dall'ordine
+    // di lettura e nessuno se ne accorgerebbe.
+    for (const f of fasce) {
+      const dup = (f.personalizzazioni || []).map(p => p.ruolo).filter((v, k, a) => a.indexOf(v) !== k);
+      if (dup.length) return res.status(400).json({ errore: `Nella fase "${f.titolo}" la squadra "${dup[0]}" compare due volte.` });
+    }
     try {
-      await scrivi('tappe', tappe);
-      await scrivi('spostamenti', spostamenti);
-      res.json({ ok: true, tappe: tappe.length, spostamenti: spostamenti.length });
+      await scrivi('fasce', fasce);
+      res.json({ ok: true, fasce: fasce.length });
     } catch (e) { res.status(500).json({ errore: e.message }); }
   }
 };

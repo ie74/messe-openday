@@ -184,6 +184,10 @@ input[type=password] {
     font-size: .92rem
 }
 
+.banner.bad {
+    border-left-color: var(--bad)
+}
+
 /* ---------- Itinerario: nodi e tratti sulla stessa linea verticale ---------- */
 .tl {
     list-style: none;
@@ -192,11 +196,10 @@ input[type=password] {
     --col: 20px
 }
 
-/* Nodo, tratto e tappa attraversata stanno sulla stessa griglia: così la linea
-   verticale passa da una riga all'altra senza mai interrompersi. */
+/* Nodo e tratto stanno sulla stessa griglia: così la linea verticale passa da
+   una riga all'altra senza mai interrompersi. */
 .it,
-.leg,
-.pass {
+.leg {
     display: grid;
     grid-template-columns: var(--rail) var(--col) 1fr;
     gap: 12px;
@@ -222,7 +225,7 @@ input[type=password] {
     background: var(--line)
 }
 
-/* Ai due capi la linea parte e finisce sul pallino, senza scavalcarlo. */
+/* Ai due capi la linea parte e finisce sul pallino, senza scivalcarlo. */
 .tl > :first-child .rail::before {
     top: 21px
 }
@@ -232,7 +235,6 @@ input[type=password] {
     height: 21px
 }
 
-/* --- Nodo: una voce del programma --- */
 .it {
     padding: 5px 0
 }
@@ -280,7 +282,7 @@ input[type=password] {
     font-weight: 600
 }
 
-/* --- Pallini --- */
+/* Pallino del nodo */
 .it .rail::after {
     content: '';
     position: absolute;
@@ -303,9 +305,8 @@ input[type=password] {
     border-color: var(--sig)
 }
 
-/* --- Tratto di percorso: la linea tratteggiata e l'istruzione in mezzo --- */
-.leg .rail::before,
-.pass .rail::before {
+/* Tratto di percorso: linea tratteggiata e istruzione in mezzo */
+.leg .rail::before {
     background: repeating-linear-gradient(var(--line) 0 5px, transparent 5px 11px)
 }
 
@@ -322,48 +323,11 @@ input[type=password] {
     font-weight: 800
 }
 
-/* --- Tappa attraversata: un nodo, ma senza orario --- */
-.pass .rail::after {
-    content: '';
-    position: absolute;
-    top: 14px;
-    left: 50%;
-    translate: -50% 0;
-    width: 11px;
-    height: 11px;
-    border-radius: 50%;
-    background: var(--bg);
-    border: 2px solid var(--line);
-    z-index: 1
-}
-
-.pass .nd {
-    padding: 9px 0;
-    color: var(--mut);
-    font-weight: 700;
-    font-size: .92rem
-}
-
-/* --- Collegamento mancante: tratto in rosso, si nota subito --- */
-.leg.bad .rail::before {
-    background: repeating-linear-gradient(var(--bad) 0 5px, transparent 5px 11px)
-}
-
-.leg.bad .legtxt,
-.leg.bad .legtxt::before {
-    color: var(--bad)
-}
-
-.leg.bad .legtxt::before {
-    content: '!\00a0'
-}
-
 .vuoto {
     padding: 24px 0;
     color: var(--mut)
 }
 
-/* --- Stati --- */
 .past {
     opacity: .5
 }
@@ -393,6 +357,211 @@ input[type=password] {
     color: #3b4a6e
 }
 
+/* Anteprima per l'admin: quello che vedranno gli altri, in una riga. */
+.pv {
+    list-style: none;
+    padding: 8px 0 0;
+    margin-top: 8px;
+    border-top: 1px dashed var(--line);
+    font-size: .82rem;
+    font-weight: 500;
+    color: var(--mut);
+    display: grid;
+    gap: 5px
+}
+
+.pv li b {
+    color: var(--tx)
+}
+
+.pv li small {
+    display: block
+}
+
+.now .pv {
+    color: #3b4a6e;
+    border-top-color: #3b4a6e66
+}
+
+.now .pv li b {
+    color: var(--ink)
+}
+
+/* ---------- Attesa, errori, conferme ---------- */
+@keyframes brilla {
+    da { background-position: -200% 0 }
+    a { background-position: 200% 0 }
+}
+
+.br {
+    display: block;
+    height: 12px;
+    margin: 8px 0;
+    border-radius: 6px;
+    background: linear-gradient(90deg, var(--panel) 25%, var(--line) 50%, var(--panel) 75%);
+    background-size: 200% 100%;
+    animation: brilla 1.2s linear infinite
+}
+
+.br.s2 { width: 50px }
+.br.s4 { width: 70% }
+.br.s6 { width: 90% }
+.it.sk { pointer-events: none }
+
+.btn.mini {
+    display: inline-block;
+    width: auto;
+    margin: 8px 0 0;
+    padding: 7px 14px;
+    font-size: .85rem;
+    border-radius: 99px;
+    border: 2px solid var(--sig);
+    background: transparent;
+    color: var(--tx)
+}
+
+#toast {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: calc(18px + env(safe-area-inset-bottom));
+    z-index: 20;
+    width: fit-content;
+    max-width: 90vw;
+    margin: 0 auto;
+    padding: 12px 18px;
+    border-radius: 99px;
+    background: var(--panel);
+    border: 2px solid var(--line);
+    color: var(--tx);
+    font-weight: 700;
+    font-size: .92rem;
+    text-align: center;
+    animation: sale .22s ease-out
+}
+
+#toast.male {
+    border-color: var(--bad);
+    color: var(--bad)
+}
+
+@keyframes sale {
+    da { opacity: 0; transform: translateY(14px) }
+    a { opacity: 1; transform: none }
+}
+
+/* Risposta al tocco: senza, il pulsante sembra non premersi e l'app dà
+   l'impressione di non reagire. */
+.btn, .role, .x, .chip { transition: transform .1s }
+.btn:active, .role:active, .x:active, .chip:active { transform: scale(.97) }
+
+/* ---------- Amministrazione ---------- */
+input[type=text],
+select,
+textarea {
+    width: 100%;
+    padding: 12px;
+    margin-top: 6px;
+    border-radius: 6px;
+    border: 2px solid var(--line);
+    background: var(--bg);
+    color: var(--tx);
+    font: inherit
+}
+
+textarea {
+    resize: vertical;
+    min-height: 64px;
+    margin-top: 6px
+}
+
+.due {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px
+}
+
+.piccolo {
+    font-size: .86rem
+}
+
+.lst {
+    list-style: none;
+    padding: 0;
+    margin: 12px 0 24px;
+    display: grid;
+    gap: 14px
+}
+
+.lst li {
+    padding: 14px;
+    background: var(--panel);
+    border-radius: 8px;
+    font-weight: 600
+}
+
+.lst li.vuoto {
+    background: none;
+    font-weight: 500;
+    color: var(--mut)
+}
+
+.fz {
+    border-left: 4px solid var(--sig)
+}
+
+.riga {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px
+}
+
+.riga small {
+    display: block;
+    font-weight: 500;
+    font-size: .84rem;
+    color: var(--mut)
+}
+
+.btnx {
+    flex: none;
+    display: flex;
+    gap: 6px
+}
+
+.ps {
+    margin: 12px 0;
+    padding-left: 12px;
+    border-left: 2px solid var(--line);
+    display: grid;
+    gap: 8px
+}
+
+.mod, .agg {
+    display: grid;
+    gap: 2px
+}
+
+.agg {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--line)
+}
+
+.x {
+    flex: none;
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    border: 2px solid var(--line);
+    background: transparent;
+    color: var(--tx);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer
+}
+
 #modal {
     position: fixed;
     inset: 0;
@@ -411,68 +580,7 @@ input[type=password] {
     padding: 26px 22px calc(26px + env(safe-area-inset-bottom))
 }
 
-/* ---------- Amministrazione ---------- */
-input[type=text],
-select,
-textarea {
-    width: 100%;
-    padding: 12px;
-    margin-top: 6px;
-    border-radius: 6px;
-    border: 2px solid var(--line);
-    background: var(--bg);
-    color: var(--tx);
-    font: inherit
-}
-
-textarea {
-    resize: vertical;
-    min-height: 96px;
-    margin-top: 6px
-}
-
-.lst {
-    list-style: none;
-    padding: 0;
-    margin: 12px 0 24px;
-    display: grid;
-    gap: 8px
-}
-
-.lst li {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    padding: 12px 14px;
-    background: var(--panel);
-    border-radius: 8px;
-    font-weight: 600
-}
-
-.lst li small {
-    display: block;
-    font-weight: 500;
-    font-size: .82rem;
-    color: var(--mut)
-}
-
-.lst li.vuoto {
-    display: block;
-    background: none;
-    font-weight: 500;
-    color: var(--mut)
-}
-
-.x {
-    flex: none;
-    width: 34px;
-    height: 34px;
-    border-radius: 50%;
-    border: 2px solid var(--line);
-    background: transparent;
-    color: var(--tx);
-    font-size: 1.15rem;
-    line-height: 1;
-    cursor: pointer
+@media (prefers-reduced-motion: reduce) {
+    .br, #toast { animation: none }
+    .btn:active, .role:active, .x:active, .chip:active { transform: none }
 }

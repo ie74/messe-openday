@@ -20,16 +20,20 @@ const store = {
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { } },
   del(k) { try { localStorage.removeItem(k); } catch { } }
 };
-const fmt = d => d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
-const fmtOrologio = d => `${fmt(d)}<small>${String(d.getSeconds()).padStart(2, '0')}</small>`;
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
-// L'id di una tappa/spostamento: nome normalizzato, con suffisso se esiste già.
-const slug = n => String(n).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
-  .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'x';
-const idUnico = (base, gia) => {
-  let id = base, n = 2;
-  while (gia.includes(id)) id = `${base}-${n++}`;
-  return id;
+/* Una data non valida non deve mai far cadere la schermata: toLocaleTimeString
+   lancia RangeError su "Invalid Date", e l'errore si porta dietro tutti gli
+   handler già registrati. Qui diventa un "--:--" e si va avanti. */
+const dataOk = d => d != null && d !== '' && !isNaN(new Date(d));
+const iso = d => (dataOk(d) ? new Date(d).toISOString() : null);
+const fmt = d => (dataOk(d) ? new Date(d).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '--:--');
+const fmtOrologio = d => `${fmt(d)}<small>${String(d.getSeconds()).padStart(2, '0')}</small>`;
+// Formato atteso da <input type="datetime-local">: ora locale, minuti di precisione.
+const perInput = d => {
+  if (!dataOk(d)) return '';
+  const x = new Date(d), p = n => String(n).padStart(2, '0');
+  return `${x.getFullYear()}-${p(x.getMonth() + 1)}-${p(x.getDate())}T${p(x.getHours())}:${p(x.getMinutes())}`;
 };
 
 const scarica = (nome, testo, tipo) => {
@@ -39,8 +43,8 @@ const scarica = (nome, testo, tipo) => {
 };
 const csv = righe => righe.map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\r\n');
 
-// Lettore CSV minimale, con supporto alle virgolette: serve per incollare
-// indietro un file sistemato su un foglio di calcolo.
+// Lettore CSV minimale con supporto alle virgolette, per reimportare un file
+// sistemato su un foglio di calcolo.
 function leggiCsv(testo) {
   const righe = []; let r = [], c = '', dentro = false;
   for (let i = 0; i < testo.length; i++) {
@@ -53,8 +57,44 @@ function leggiCsv(testo) {
   }
   if (c || r.length) { r.push(c); righe.push(r); }
   const [testata, ...corpo] = righe;
-  return corpo.filter(x => x.some(y => y !== '')).map(x => Object.fromEntries(testata.map((k, i) => [k.trim(), x[i] ?? ''])));
+  return corpo.filter(x => x.some(y => y !== '')).map(x => Object.fromEntries(testata.map((k, i) => [k.trim().toLowerCase(), x[i] ?? ''])));
 }
+
+/* ---------- Aspettare, avvisare, riprovare ---------- */
+// Ogni richiesta ha un tetto. Senza, una rete morta lascia la pagina muta per
+// sempre: sembra un crash, non un problema di connessione.
+async function chiedi(url, opts = {}, ms = 8000) {
+  const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), ms);
+  try {
+    return await fetch(url, { ...opts, signal: ctl.signal });
+  } catch (e) {
+    throw new Error(e.name === 'AbortError'
+      ? `Il server non ha risposto in ${Math.round(ms / 1000)} secondi.`
+      : 'Server non raggiungibile: controlla la rete.');
+  } finally { clearTimeout(t); }
+}
+
+// Conferme ed errori in basso, spariscono da soli.
+let toastT = null;
+function avvisa(testo, male = false) {
+  let t = $('#toast');
+  if (!t) { t = document.createElement('div'); t.id = 'toast'; document.body.appendChild(t); }
+  t.textContent = testo;
+  t.className = male ? 'male' : '';
+  t.hidden = false;
+  clearTimeout(toastT);
+  toastT = setTimeout(() => { t.hidden = true; }, 3400);
+}
+
+// Il pulsante dichiara che sta lavorando: così non lo si tocca due volte.
+const attesa = (b, testo = 'Attendo...') => { if (b) { b.disabled = true; b.dataset.t = b.textContent; b.textContent = testo; } };
+const pronto = b => { if (b) { b.disabled = false; if (b.dataset.t) b.textContent = b.dataset.t; } };
+
+// Tre barre che si muovono al posto dei dati: la pagina non resta muta e non
+// salta di altezza quando i dati arrivano.
+const scheletro = `<ol class="tl" id="tl">${[0, 1, 2].map(() =>
+  `<li class="it sk"><div class="tm"><span class="br s2"></span></div><div class="rail"></div>
+   <div class="nd"><span class="br s6"></span><span class="br s4"></span></div></li>`).join('')}</ol>`;
 
 /* ---------- Rilevamento ambiente ---------- */
 const q = new URLSearchParams(location.search), ua = navigator.userAgent;
@@ -64,70 +104,62 @@ const env = {
   mobile: q.has('m') || /Android|iPhone|iPad|iPod/.test(ua) || ipad,
   standalone: q.has('s') || matchMedia('(display-mode: standalone)').matches || navigator.standalone === true
 };
-const S = { role: store.get('role'), token: store.get('token'), items: [], sig: '' };
+const S = { role: store.get('role'), token: store.get('token'), admin: false, sig: '' };
 let installEvt = null;
 addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; $('#inst')?.removeAttribute('hidden'); });
 
 /* ---------- Ruoli ---------- */
 const GROUPS = CFG.GROUPS;
-const GROUP_LABEL = new Set(GROUPS.map(g => g.label));
 const GROUP_OF = new Map();
 GROUPS.forEach(g => { GROUP_OF.set(g.label, g.label); g.units.forEach(u => GROUP_OF.set(u, g.label)); });
 
+// Ruolo salvato da una versione precedente: non esiste più, ripartiamo puliti.
 if (S.role && S.role !== CFG.ADMIN && !GROUP_OF.has(S.role)) {
   S.role = null; S.token = null;
   store.del('role'); store.del('token');
 }
 
-// Admin = ha un token firmato dal server. Non basta il ruolo: quello lo
-// può cambiare chiunque dalla console del browser.
+// Admin = ha un token firmato dal server. Il ruolo da solo non basta: quello
+// lo può cambiare chiunque dalla console del browser.
 const isAdmin = () => !!S.token;
-const roleMatches = r => r === S.role || (GROUP_LABEL.has(r) && GROUP_OF.get(r) === GROUP_OF.get(S.role));
-const visible = i => isAdmin() || !i.ruoli?.length || i.ruoli.some(roleMatches);
-const isGroup = r => S.role && GROUP_OF.get(r) === GROUP_OF.get(S.role);
+const gruppo = () => (S.role ? (GROUP_OF.get(S.role) || '') : '');
+const sameSquadra = g => S.role && GROUP_OF.get(g.label) === gruppo();
 
-/* ---------- Luogo: tappe e spostamenti ---------- */
-let Tappe = [], Spostamenti = [];
-const SCALA = ['Scala A1-A2', 'Scala B1-B2'];
+// Le squadre selezionabili: la squadra intera (vale per tutte le unità) oppure
+// una singola unità.
+const optSquadra = sel => GROUPS.map(g =>
+  `<optgroup label="${esc(g.label)}"><option value="${esc(g.label)}"${sel === g.label ? ' selected' : ''}>${esc(g.label)} — tutta la squadra</option>` +
+  g.units.map(u => `<option value="${esc(u)}"${sel === u ? ' selected' : ''}>${esc(u)}</option>`).join('') +
+  '</optgroup>').join('');
 
-const LUOGO_DEMO = {
-  tappe: ['Ingresso A', 'Corridoio centrale', 'Sala principale', 'Deposito materiali', ...SCALA,
-    'Laboratorio 1', 'Laboratorio 2', 'Laboratorio 3', ...GROUPS.flatMap(g => g.units)]
-    .map(nome => ({ id: slug(nome), nome })),
-  spostamenti: [
-    { da: 'Ingresso A', a: 'Corridoio centrale', istruzione: 'Tieni la destra, i cartelli blu' },
-    { da: 'Ingresso A', a: 'Sala principale', istruzione: 'A destra, oltre la porta vetrata' },
-    { da: 'Corridoio centrale', a: 'Sala principale', istruzione: 'Oltre il bancone della reception' },
-    { da: 'Corridoio centrale', a: 'Deposito materiali', istruzione: 'In fondo a sinistra' },
-    { da: 'Corridoio centrale', a: 'Scala A1-A2', istruzione: 'In fondo al corridoio, a sinistra' },
-    { da: 'Corridoio centrale', a: 'Scala B1-B2', istruzione: 'Sul lato opposto del corridoio' },
-    { da: 'Scala A1-A2', a: 'Laboratorio 1', istruzione: 'Piano A1, prima porta a destra' },
-    { da: 'Scala A1-A2', a: 'Laboratorio 2', istruzione: 'Salendo, piano A2, in fondo' },
-    { da: 'Scala B1-B2', a: 'Laboratorio 3', istruzione: 'Piano B1, a sinistra' },
-    ...GROUPS.flatMap(g => g.units.map(u => ({ da: 'Corridoio centrale', a: u, istruzione: 'Segui i cartelli col numero dell\'aula' })))
-  ].map((s, i) => ({ id: slug(`${s.da}-${s.a}`) + (i ? '-' + i : ''), ...s }))
-};
+/* ---------- Fasi ---------- */
+let Fasce = [];
+let inCorso = false;
+let edF = null, edP = null, sporco = false;
 
-const PARTENZA = { 'Corridoio': 'Ingresso A', 'Aula': '@Aula' };
-const risolvi = t => t?.[0] !== '@' ? t
-  : isAdmin() ? t.slice(1) + ' (tutte)'
-    : GROUP_OF.get(S.role) === t.slice(1) ? S.role : t;
-
-function percorso(da, a) {
-  if (!da || !a || da === a) return null;
-  const coda = [{ tappa: da, passi: [] }], visto = new Set([da]);
-  while (coda.length) {
-    const { tappa, passi } = coda.shift();
-    if (tappa === a) return passi;
-    for (const l of Spostamenti) {
-      if (l.da !== tappa && l.a !== tappa) continue;
-      const prossimo = l.da === tappa ? l.a : l.da;
-      if (visto.has(prossimo)) continue;
-      visto.add(prossimo);
-      coda.push({ tappa: prossimo, passi: [...passi, { tappa: prossimo, come: l.istruzione }] });
-    }
-  }
-  return null;
+function demoFasce() {
+  const t = m => new Date(Date.now() + m * 6e4).toISOString();
+  return [
+    { id: 'f1', titolo: 'Briefing generale', inizio: t(-120), fine: t(-75), note: 'Badge obbligatorio.', personalizzazioni: [] },
+    {
+      id: 'f2', titolo: 'Preparazione e raccolta', inizio: t(-40), fine: t(20), note: '', personalizzazioni: [
+        { id: 'p1', ruolo: 'Aula', tappa: '', istruzioni: 'Resta nella tua aula, controlla banchi e materiali, poi apri le porte.' },
+        { id: 'p2', ruolo: 'Corridoio', tappa: 'Corridoio centrale', istruzioni: 'Fai il giro di tutti i banchi. Radio canale 1.' }
+      ]
+    },
+    {
+      id: 'f3', titolo: 'Laboratori', inizio: t(35), fine: t(80), note: '', personalizzazioni: [
+        { id: 'p3', ruolo: 'Aula 1', tappa: 'Laboratorio 1', istruzioni: 'Prendi la scala A1-A2, piano A1, prima porta a destra.' },
+        { id: 'p4', ruolo: 'Aula 2', tappa: 'Laboratorio 1', istruzioni: 'Prendi la scala A1-A2, piano A1, prima porta a destra.' },
+        { id: 'p5', ruolo: 'Aula 3', tappa: 'Laboratorio 2', istruzioni: 'Prendi la scala A1-A2, sali al piano A2, va in fondo.' },
+        { id: 'p6', ruolo: 'Aula 5', tappa: 'Laboratorio 2', istruzioni: 'Prendi la scala A1-A2, sali al piano A2, va in fondo.' },
+        { id: 'p7', ruolo: 'Aula 6', tappa: 'Laboratorio 3', istruzioni: 'Prendi la scala B1-B2, piano B1, a sinistra.' },
+        { id: 'p8', ruolo: 'Aula 8', tappa: 'Laboratorio 3', istruzioni: 'Prendi la scala B1-B2, piano B1, a sinistra.' },
+        { id: 'p9', ruolo: 'Corridoio', tappa: 'Corridoio centrale', istruzioni: 'Accompagni di sezione in sezione: non resti in un laboratorio fisso.' }
+      ]
+    },
+    { id: 'f4', titolo: 'Rientro e chiusura', inizio: t(150), fine: t(210), note: 'Badge e radio restituite al presidio.', personalizzazioni: [] }
+  ];
 }
 
 /* ---------- Avvio ---------- */
@@ -192,10 +224,10 @@ async function subscribePush() {
     const reg = await navigator.serviceWorker.ready;
     const sub = (await reg.pushManager.getSubscription()) ||
       await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u8(CFG.VAPID) });
-    await fetch(CFG.API + '/subscribe', {
+    await chiedi(CFG.API + '/subscribe', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ subscription: sub, ruolo: S.role, admin: isAdmin() })
-    });
+    }, 15000);
   } catch (e) { console.warn('push', e); }
 }
 
@@ -203,8 +235,8 @@ async function subscribePush() {
 function showRoles() {
   screen.innerHTML = `<div class="wrap"><h1>Dove lavori?</h1>
     <p class="mut">Vedrai solo gli orari e gli avvisi che ti riguardano. Puoi cambiarlo quando vuoi.</p>
-    <div class="roles">${GROUPS.map(g => `<button class="role${isGroup(g.label) ? ' on' : ''}" data-g="${esc(g.label)}">${esc(g.label)}${g.units.length ? `<small>${g.units.length} aule</small>` : ''}</button>`).join('')}</div>
-    ${isAdmin() ? '<button class="btn ghost" id="adm2">Amministra tappe e spostamenti</button>' : ''}
+    <div class="roles">${GROUPS.map(g => `<button class="role${sameSquadra(g) ? ' on' : ''}" data-g="${esc(g.label)}">${esc(g.label)}${g.units.length ? `<small>${g.units.length} aule</small>` : ''}</button>`).join('')}</div>
+    ${isAdmin() ? '<button class="btn ghost" id="adm2">Amministra le fasi</button>' : ''}
     <button class="btn ghost" id="adm">Sono un admin</button><div id="admbox"></div>
     ${S.role ? '<button class="btn ghost" id="back">Torna al programma</button>' : ''}</div>`;
   screen.querySelectorAll('.role').forEach(b => b.onclick = () => {
@@ -237,104 +269,115 @@ function adminForm() {
     <button class="btn">Entra</button><p class="bad" id="err"></p></form>`;
   $('#af').onsubmit = async e => {
     e.preventDefault();
-    const err = $('#err');
+    const err = $('#err'), b = $('#af').querySelector('button');
     if (!ONLINE) { err.textContent = 'Server non configurato: la password si verifica solo sul server.'; return; }
+    attesa(b, 'Verifico...');
     try {
-      const r = await fetch(CFG.API + '/admin', {
+      const r = await chiedi(CFG.API + '/admin', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ azione: 'login', password: $('#pw').value })
-      });
-      const d = await r.json();
+      }, 12000);
+      const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.errore || 'Password errata.');
       S.token = d.token; store.set('token', d.token);
-      if (!S.role) { err.textContent = ''; return showRoles(); }
-      showTimeline();
-    } catch (x) { err.textContent = x.message; }
+      err.textContent = '';
+      avvisa('Accesso consentito');
+      S.role ? showTimeline() : showRoles();
+    } catch (x) {
+      err.textContent = x.message;
+      avvisa(x.message, true);
+    }
+    pronto(b);
   };
 }
 
-/* ---------- Caricamento dati ---------- */
-function vociDemo() {
-  const t = m => new Date(Date.now() + m * 6e4).toISOString();
-  return [
-    { id: 'v1', titolo: 'Preparazione aula', ruoli: ['Aula'], inizio: t(-120), fine: t(-75), tappa: '@Aula', note: 'Controlla banchi e materiali, poi apri le porte.' },
-    { id: 'v2', titolo: 'Raccolta al corridoio centrale', ruoli: ['Aula'], inizio: t(-40), fine: t(20), tappa: 'Corridoio centrale', notes: 'Aspetta i cartelli verdi.' },
-    { id: 'v3', titolo: 'Briefing e consegna turni', ruoli: ['Corridoio'], inizio: t(-120), fine: t(-75), tappa: 'Ingresso A' },
-    { id: 'v4', titolo: 'Affiancamento ai laboratori', ruoli: ['Corridoio'], inizio: t(35), fine: t(80), tappa: 'Corridoio centrale', note: 'Di sezione in sezione: non resti in un laboratorio solo.' },
-    { id: 'v5', titolo: 'Laboratorio 1', ruoli: ['Aula 1', 'Aula 2'], inizio: t(35), fine: t(80), tappa: 'Laboratorio 1' },
-    { id: 'v6', titolo: 'Laboratorio 2', ruoli: ['Aula 3', 'Aula 4', 'Aula 5'], inizio: t(35), fine: t(80), tappa: 'Laboratorio 2', note: 'Aule riunite, si conta sui banchi.' },
-    { id: 'v7', titolo: 'Laboratorio 3', ruoli: ['Aula 6', 'Aula 7', 'Aula 8'], inizio: t(35), fine: t(80), tappa: 'Laboratorio 3' },
-    { id: 'v8', titolo: 'Rientro e chiusura', ruoli: [], inizio: t(150), fine: t(210), tappa: 'Ingresso A', note: 'Badge e radio restituite al presidio.' }
-  ];
+/* ---------- Caricamento ---------- */
+// Il token scaduto è la causa più comune di pagine vuote senza spiegazione:
+// me lo dico e lo butto, invece di lasciare l'admin su una lista muta.
+function controllaToken() {
+  if (!S.token || S.admin) return true;
+  S.token = null; store.del('token');
+  avvisa('Sessione scaduta: rientra come admin', true);
+  return false;
 }
 
 async function carica() {
-  if (!ONLINE) { Tappe = LUOGO_DEMO.tappe; Spostamenti = LUOGO_DEMO.spostamenti; return { items: vociDemo(), demo: true }; }
+  if (!ONLINE) { Fasce = demoFasce(); S.admin = false; return { demo: true }; }
   try {
-    const p = new URLSearchParams({
-      role: isAdmin() ? CFG.ADMIN : (S.role || ''),
-      gruppo: S.role ? (GROUP_OF.get(S.role) || '') : ''
+    const p = new URLSearchParams({ ruolo: S.role || '', gruppo: gruppo() });
+    const r = await chiedi(CFG.API + '/programma?' + p, {
+      cache: 'no-store',
+      headers: S.token ? { Authorization: 'Bearer ' + S.token } : {}
     });
-    const r = await fetch(CFG.API + '/programma?' + p, { cache: 'no-store' });
-    if (!r.ok) throw 0;
+    if (!r.ok) throw new Error('Il server ha risposto ' + r.status + '.');
     const d = await r.json();
     store.set('programma', d);
-    Tappe = d.tappe || []; Spostamenti = d.spostamenti || [];
-    return { items: d.items || [] };
-  } catch {
+    Fasce = d.fasce || [];
+    S.admin = !!d.admin;                 // il server decide, non il token locale
+    return {};
+  } catch (x) {
+    // Meglio dire cosa è successo che sparire in silenzio sui dati di esempio.
     const c = store.get('programma');
-    if (c) { Tappe = c.tappe || []; Spostamenti = c.spostamenti || []; return { items: c.items || [], stale: true }; }
-    Tappe = LUOGO_DEMO.tappe; Spostamenti = LUOGO_DEMO.spostamenti;
-    return { items: vociDemo(), demo: true };
+    if (c) { Fasce = c.fasce || []; return { offline: true, errore: x.message }; }
+    Fasce = demoFasce();
+    return { demo: true, errore: x.message };
   }
 }
 
-function status(i, k, nextIdx, now) {
-  const s = new Date(i.inizio), e = i.fine ? new Date(i.fine) : null;
-  if (now >= (e ?? s) && (e || now >= s)) return 'past';
+/* ---------- Itinerario ---------- */
+function stato(f, k, prossimoIdx, now) {
+  const s = new Date(f.inizio), e = f.fine ? new Date(f.fine) : null;
+  if (isNaN(s)) return 'later';
+  const fine = e && !isNaN(e) ? e : s;   // senza fine, finisce quando inizia
+  if (now >= fine) return 'past';
   if (now >= s) return 'now';
-  return k === nextIdx ? 'next' : 'later';
+  return k === prossimoIdx ? 'next' : 'later';
 }
 
-/* ---------- Righe dell'itinerario ---------- */
-const rigoNodo = (i, c, tappa) => {
-  const s = new Date(i.inizio), e = i.fine ? new Date(i.fine) : null;
-  return `<li class="it ${c}"><div class="tm">${fmt(s)}${e ? `<small>fino ${fmt(e)}</small>` : ''}</div><div class="rail"></div>
-    <div class="nd"><h3>${esc(i.titolo)}${c === 'now' ? '<span class="pill">Adesso</span>' : c === 'next' ? '<span class="pill">Dopo</span>' : ''}</h3>
-    ${tappa ? `<p class="loc">${esc(tappa)}</p>` : ''}
-    ${i.note ? `<p class="mut">${esc(i.note)}</p>` : ''}</div></li>`;
-};
-const rigoTratto = (come, avviso) => `<li class="leg${avviso ? ' bad' : ''}"><div class="tm"></div><div class="rail"></div>
-  <div class="legtxt">${esc(come)}</div></li>`;
-const rigoTappa = t => `<li class="pass"><div class="tm"></div><div class="rail"></div><div class="nd">${esc(t)}</div></li>`;
+// Fase: una voce del programma, con pallino e orario. Per l'admin c'è in più
+// l'anteprima di tutte le squadre, così può controllare senza uscire.
+const rigoFase = (f, c, m, admin) => `<li class="it ${c}"><div class="tm">${fmt(f.inizio)}${dataOk(f.fine) ? `<small>fino ${fmt(f.fine)}</small>` : ''}</div><div class="rail"></div>
+  <div class="nd"><h3>${esc(f.titolo)}${c === 'now' ? '<span class="pill">Adesso</span>' : c === 'next' ? '<span class="pill">Dopo</span>' : ''}</h3>
+  ${m?.tappa ? `<p class="loc">${esc(m.tappa)}</p>` : ''}
+  ${f.note ? `<p class="mut">${esc(f.note)}</p>` : ''}
+  ${admin && (f.personalizzazioni || []).length ? `<ul class="pv">${f.personalizzazioni.map(p => `<li><b>${esc(p.ruolo)}</b>${p.tappa ? ' · ' + esc(p.tappa) : ''}<small>${esc(p.istruzioni || '')}</small></li>`).join('')}</ul>` : ''}
+  </div></li>`;
+
+// Tratto: le istruzioni per arrivare alla fase che sta sotto.
+const rigoTratto = testo => `<li class="leg"><div class="tm"></div><div class="rail"></div><div class="legtxt">${esc(testo)}</div></li>`;
 
 function renderList(scroll) {
-  const now = new Date(), items = S.items.filter(visible).sort((a, b) => new Date(a.inizio) - new Date(b.inizio));
-  const nextIdx = items.findIndex(i => new Date(i.inizio) > now);
-  const st = items.map((i, k) => status(i, k, nextIdx, now));
-  const sig = st.join() + S.role;
-  if (sig === S.sig && !scroll) return;
+  if (inCorso) return;                          // dati in arrivo: non toccare il DOM
+  const now = new Date();
+  const ord = [...Fasce].sort((a, b) => new Date(a.inizio) - new Date(b.inizio));
+  const prossimoIdx = ord.findIndex(f => new Date(f.inizio) > now);
+  const st = ord.map((f, k) => stato(f, k, prossimoIdx, now));
+  const sig = st.join() + S.role + S.admin;
+  if (sig === S.sig && !scroll) return;         // niente re-render se non cambia nulla
   S.sig = sig;
-  const inizio = PARTENZA[GROUP_OF.get(S.role)];
-  let da = inizio ? risolvi(inizio) : null;
-  $('#tl').innerHTML = items.map((i, k) => {
-    const c = st[k], tappa = risolvi(i.tappa), da0 = da, via = percorso(da, tappa);
-    if (tappa) da = tappa;
-    const tratto = via ? via.map(v => rigoTratto(v.come) + rigoTappa(v.tappa)).join('')
-      : da0 && tappa && da0 !== tappa ? rigoTratto(`Nessun collegamento da ${da0} a ${tappa}: chiedi al coordinatore.`, true)
-        : '';
-    return tratto + rigoNodo(i, c, tappa);
-  }).join('') || '<li class="vuoto">Nessuna voce per il tuo ruolo.</li>';
+  $('#tl').innerHTML = ord.map((f, k) => {
+    const m = f.mia || null;
+    // Le istruzioni stanno fra una fase e l'altra: sono quelle della fase che
+    // sta sotto, perché descrivono come arrivarci. Sulla prima fase non c'è
+    // nessuna da cui arrivare, quindi non compaiono.
+    return (k > 0 && m?.istruzioni ? rigoTratto(m.istruzioni) : '') + rigoFase(f, st[k], m, S.admin);
+  }).join('') || '<li class="vuoto">Nessuna fase in programma.</li>';
   if (scroll) $('.it.now, .it.next')?.scrollIntoView({ block: 'center' });
 }
 
-const batto = () => { $('#clock').innerHTML = fmtOrologio(new Date()); renderList(false); };
+const batto = () => {
+  const c = $('#clock');
+  if (!c) { clearInterval(S.timer); S.timer = 0; return; }   // su un'altra schermata: basta
+  c.innerHTML = fmtOrologio(new Date());
+  renderList(false);
+};
 
 async function showTimeline() {
+  inCorso = true;
   screen.innerHTML = `<header class="top"><b id="clock"></b><button class="chip" id="chg">${esc(S.role || 'Admin')}, cambia</button></header>
     <div class="wrap"><div id="banner"></div>
-    <ol class="tl" id="tl"></ol>
-    ${isAdmin() ? '<button class="btn ghost" id="adm2">Amministra tappe e spostamenti</button>' : ''}
+    ${scheletro}
+    ${isAdmin() ? '<button class="btn ghost" id="adm2">Amministra le fasi</button>' : ''}
     ${env.mobile ? '<button class="btn ghost" id="test">Invia notifica di prova</button>' : ''}</div>`;
   $('#chg').onclick = showRoles;
   $('#adm2')?.addEventListener('click', showAdmin);
@@ -342,115 +385,219 @@ async function showTimeline() {
     const reg = await navigator.serviceWorker.ready;
     reg.showNotification('Notifica di prova', { body: 'Se leggi questo, sei a posto.', icon: 'icon-192.png' });
   });
-  const d = await carica();
-  S.items = d.items; S.sig = '';
-  $('#banner').innerHTML = d.demo ? '<div class="banner">Dati di esempio: il server non è ancora collegato.</div>'
-    : d.stale ? '<div class="banner">Sei offline: vedi l\'ultimo programma salvato.</div>'
-      : !Tappe.length ? '<div class="banner">Nessuna tappa nel database: chiedi all\'admin di aprire le tappe e gli spostamenti.</div>' : '';
-  renderList(true);
-  batto();
+  // L'orologio parte subito: è l'unica cosa che non aspetta i dati.
+  $('#clock').innerHTML = fmtOrologio(new Date());
   clearInterval(S.timer); S.timer = setInterval(batto, 1000);
+
+  const d = await carica();
+  inCorso = false;
+  S.sig = '';
+  const scaduto = !controllaToken();
+  $('#banner').innerHTML = d.offline
+    ? `<div class="banner bad">${esc(d.errore)} Stiamo vedendo l'ultimo programma salvato.<button class="btn mini" id="retry">Riprova</button></div>`
+    : d.errore ? `<div class="banner bad">${esc(d.errore)} Stiamo usando i dati di esempio.</div>`
+      : d.demo ? '<div class="banner">Dati di esempio: il server non è ancora collegato.</div>'
+        : !Fasce.length ? '<div class="banner">Nessuna fase in programma: chiedi all\'admin di caricarle.</div>' : '';
+  $('#retry')?.addEventListener('click', showTimeline);
+  renderList(true);
+  if (scaduto) $('#adm2')?.remove();
 }
 
-/* ---------- Amministrazione: tappe e spostamenti ---------- */
-function showAdmin() {
+/* ---------- Amministrazione ---------- */
+const segnaSporco = () => {
+  sporco = true;
+  const d = $('#dirty'); if (d) d.hidden = false;
+};
+
+const testataFase = f => `<div class="riga"><div>
+    <b>${esc(f.titolo)}</b>
+    <small>${fmt(f.inizio)}${dataOk(f.fine) ? ' — ' + fmt(f.fine) : ''}${(f.personalizzazioni || []).length ? ' · ' + f.personalizzazioni.length + ' squadre' : ''}</small>
+  </div><div class="btnx">
+    <button class="x" data-e="${esc(f.id)}" title="Modifica fase">&#9998;</button>
+    <button class="x" data-d="${esc(f.id)}" title="Elimina fase">&times;</button></div></div>
+  ${f.note ? `<p class="mut">${esc(f.note)}</p>` : ''}`;
+
+const modFase = f => `<form class="mod" data-f="${esc(f.id)}">
+  <label>Titolo</label><input name="titolo" value="${esc(f.titolo)}" required autocomplete="off">
+  <div class="due"><div><label>Inizio</label><input type="datetime-local" name="inizio" value="${perInput(f.inizio)}" required></div>
+    <div><label>Fine</label><input type="datetime-local" name="fine" value="${perInput(f.fine)}"></div></div>
+  <label>Nota per tutti</label><input name="nota" value="${esc(f.note || '')}" autocomplete="off">
+  <button class="btn">Salva fase</button></form>`;
+
+const rigaSquadra = (f, p) => `<div class="riga"><div>
+    <b>${esc(p.ruolo)}</b>${p.tappa ? ' · ' + esc(p.tappa) : ''}
+    <small>${esc(p.istruzioni || '')}</small></div><div class="btnx">
+    <button class="x" data-pe="${esc(p.id)}" data-f="${esc(f.id)}" title="Modifica">&#9998;</button>
+    <button class="x" data-pd="${esc(p.id)}" data-f="${esc(f.id)}" title="Elimina">&times;</button></div></div>`;
+
+const modSquadra = (f, p) => `<form class="mod mod-p" data-f="${esc(f.id)}" data-p="${esc(p.id)}">
+  <label>Squadra</label><select name="ruolo">${optSquadra(p.ruolo)}</select>
+  <label>Luogo</label><input name="tappa" value="${esc(p.tappa || '')}" placeholder="Laboratorio 2" autocomplete="off">
+  <label>Istruzioni per arrivarci</label><textarea name="istruzioni" rows="3" placeholder="Prendi la scala A1-A2, piano A1">${esc(p.istruzioni || '')}</textarea>
+  <button class="btn">Salva</button></form>`;
+
+const aggSquadra = f => `<form class="agg" data-f="${esc(f.id)}">
+  <div class="due"><div><label>Squadra</label><select name="ruolo">${optSquadra('')}</select></div>
+    <div><label>Luogo</label><input name="tappa" placeholder="Laboratorio 2" autocomplete="off"></div></div>
+  <label>Istruzioni per arrivarci</label><textarea name="istruzioni" rows="2" placeholder="Prendi la scala A1-A2, piano A1"></textarea>
+  <button class="btn ghost">Aggiungi alla squadra</button></form>`;
+
+function disegna() {
+  const el = $('#lf');
+  if (!el) return;
+  el.innerHTML = [...Fasce]
+    .sort((a, b) => new Date(a.inizio) - new Date(b.inizio))
+    .map(f => `<li class="fz">
+      ${edF === f.id ? modFase(f) : testataFase(f)}
+      <div class="ps">${(f.personalizzazioni || []).map(p => edP === p.id ? modSquadra(f, p) : rigaSquadra(f, p)).join('')
+        || '<p class="mut piccolo">Nessuna squadra personalizzata: vedranno la fase e basta.</p>'}</div>
+      ${edF === f.id ? '' : aggSquadra(f)}
+    </li>`).join('') || '<li class="vuoto">Nessuna fase. Aggiungine una sopra.</li>';
+}
+
+async function showAdmin() {
   screen.innerHTML = `<header class="top"><b>Amministrazione</b><button class="chip" id="esci">Esci</button></header>
     <div class="wrap">
-      <h2>Tappe</h2>
-      <p class="mut">I posti: aule, corridoi, scale, laboratori. Le aule 1-8 devono chiamarsi come i ruoli.</p>
-      <form class="box" id="ft"><label for="tn">Nome tappa</label>
-        <input id="tn" placeholder="Laboratorio 1" required autocomplete="off">
-        <button class="btn">Aggiungi tappa</button></form>
-      <ul class="lst" id="lt"></ul>
-
-      <h2>Spostamenti</h2>
-      <p class="mut">Come si va da una tappa a un'altra. Si possono percorrere in entrambi i sensi, e il percorso più breve si calcola da solo.</p>
-      <form class="box" id="fs">
-        <label for="sd">Da</label><select id="sd"></select>
-        <label for="sa">A</label><select id="sa"></select>
-        <label for="si">Istruzione</label>
-        <input id="si" placeholder="Piano A1, prima porta a destra" required autocomplete="off">
-        <button class="btn">Aggiungi spostamento</button></form>
-      <ul class="lst" id="ls"></ul>
+      <h2>Fasi</h2>
+      <p class="mut">Valgono per tutti. Sotto ogni fase puoi dire a ogni squadra dove trovarsi e come arrivarci.</p>
+      <form class="box" id="ff">
+        <label>Titolo</label><input name="titolo" required autocomplete="off" placeholder="Laboratori">
+        <div class="due"><div><label>Inizio</label><input type="datetime-local" name="inizio" required></div>
+          <div><label>Fine</label><input type="datetime-local" name="fine"></div></div>
+        <label>Nota per tutti</label><input name="nota" autocomplete="off" placeholder="Badge obbligatorio">
+        <button class="btn">Aggiungi fase</button></form>
+      <ul class="lst" id="lf"></ul>
 
       <h2>Salva, esporta, importa</h2>
       <p class="mut">Finché non salvi, le modifiche stanno solo su questa pagina.</p>
+      <p class="bad" id="dirty" hidden>Ci sono modifiche non salvate.</p>
       <button class="btn" id="salva">Salva sul server</button>
       <button class="btn ghost" id="expj">Scarica JSON</button>
       <button class="btn ghost" id="expc">Scarica CSV</button>
       <button class="btn ghost" id="log">Esci e scarta le modifiche</button>
-      <label for="imp" class="mut">Incolla qui un JSON o un CSV per sostituire tutto</label>
-      <textarea id="imp" rows="6" placeholder='{"tappe":[...],"spostamenti":[...]}'></textarea>
+      <label for="imp">Incolla qui un JSON o un CSV del programma</label>
+      <textarea id="imp" rows="6" placeholder='{"fasce":[...]}'></textarea>
       <button class="btn ghost" id="doimp">Importa</button>
       <p class="bad" id="aerr"></p>
     </div>`;
 
-  const disegna = () => {
-    $('#lt').innerHTML = Tappe.map(t => `<li><span>${esc(t.nome)}</span><button class="x" data-id="${esc(t.id)}" aria-label="Elimina ${esc(t.nome)}">&times;</button></li>`).join('')
-      || '<li class="vuoto">Nessuna tappa.</li>';
-    $('#ls').innerHTML = Spostamenti.map(s => `<li><span>${esc(s.da)} &rarr; ${esc(s.a)}<small>${esc(s.istruzione || '')}</small></span>
-      <button class="x" data-id="${esc(s.id)}" aria-label="Elimina">&times;</button></li>`).join('')
-      || '<li class="vuoto">Nessuno spostamento.</li>';
-    const opt = Tappe.map(t => `<option value="${esc(t.nome)}">${esc(t.nome)}</option>`).join('');
-    $('#sd').innerHTML = opt; $('#sa').innerHTML = opt;
-    // Le tappe senza spostamento sono isolate: il percorso non esiste e in
-    // programma compare "nessun collegamento". Meglio vederlo qui.
-    const isolate = Tappe.filter(t => !Spostamenti.some(s => s.da === t.nome || s.a === t.nome));
-    $('#aerr').textContent = isolate.length ? `Tappe isolate (irraggiungibili): ${isolate.map(t => t.nome).join(', ')}` : '';
-  };
-  disegna();
-
-  $('#ft').onsubmit = e => {
+  $('#ff [name=inizio]').value = perInput(Date.now());
+  $('#ff').onsubmit = e => {
     e.preventDefault();
-    const nome = $('#tn').value.trim();
-    if (!nome) return;
-    if (Tappe.some(t => t.nome.toLowerCase() === nome.toLowerCase())) return $('#aerr').textContent = `La tappa "${nome}" esiste già.`;
-    Tappe.push({ id: idUnico(slug(nome), Tappe.map(t => t.id)), nome });
-    $('#tn').value = ''; disegna();
+    const d = new FormData(e.target);
+    const titolo = (d.get('titolo') || '').trim();
+    if (!titolo) return avvisa('Metti un titolo alla fase', true);
+    const inizio = iso(d.get('inizio'));
+    if (!inizio) return avvisa('Scegli un orario di inizio valido', true);
+    Fasce.push({
+      id: 'f' + uid(), titolo, inizio,
+      fine: d.get('fine') ? iso(d.get('fine')) : null,
+      note: (d.get('nota') || '').trim(), personalizzazioni: []
+    });
+    e.target.reset();
+    $('#ff [name=inizio]').value = perInput(Date.now());
+    disegna(); segnaSporco();
+    avvisa('Fase aggiunta');
   };
 
-  $('#fs').onsubmit = e => {
+  $('#lf').onclick = e => {
+    const b = e.target.closest('button');
+    if (!b || !b.dataset) return;
+    const d = b.dataset;
+    if (d.e !== undefined) { edF = d.e; edP = null; disegna(); }
+    else if (d.pe !== undefined) { edP = d.pe; edF = null; disegna(); }
+    else if (d.d !== undefined) {
+      const f = Fasce.find(x => x.id === d.d);
+      if (f && confirm(`Eliminare la fase "${f.titolo}"?`)) {
+        Fasce = Fasce.filter(x => x.id !== d.d);
+        edF = null;
+        disegna(); segnaSporco();
+        avvisa('Fase eliminata');
+      }
+    } else if (d.pd !== undefined) {
+      const f = Fasce.find(x => x.id === d.f);
+      if (!f) return;
+      f.personalizzazioni = f.personalizzazioni.filter(p => p.id !== d.pd);
+      disegna(); segnaSporco();
+      avvisa('Squadra rimossa');
+    }
+  };
+
+  $('#lf').onsubmit = e => {
     e.preventDefault();
-    const da = $('#sd').value, a = $('#sa').value, istruzione = $('#si').value.trim();
-    if (!da || !a || da === a) return $('#aerr').textContent = 'Scegli due tappe diverse.';
-    Spostamenti.push({ id: idUnico(slug(`${da}-${a}`), Spostamenti.map(s => s.id)), da, a, istruzione });
-    $('#si').value = ''; disegna();
-  };
-
-  $('#lt').onclick = e => {
-    const id = e.target.dataset.id; if (!id) return;
-    const nome = Tappe.find(t => t.id === id)?.nome;
-    Tappe = Tappe.filter(t => t.id !== id);
-    // Spazzare via anche gli spostamenti che la toccavano, o il grafo si rompe.
-    Spostamenti = Spostamenti.filter(s => s.da !== nome && s.a !== nome);
-    disegna();
-  };
-  $('#ls').onclick = e => {
-    const id = e.target.dataset.id; if (!id) return;
-    Spostamenti = Spostamenti.filter(s => s.id !== id); disegna();
+    const form = e.target, d = new FormData(form);
+    const f = Fasce.find(x => x.id === form.dataset.f);
+    if (!f) return;
+    let msg;
+    if (form.classList.contains('mod-p')) {
+      const p = f.personalizzazioni.find(x => x.id === form.dataset.p);
+      if (!p) return;
+      const ruolo = d.get('ruolo');
+      if (f.personalizzazioni.some(x => x.id !== p.id && x.ruolo === ruolo))
+        return avvisa(`"${ruolo}" ha già una riga in "${f.titolo}"`, true);
+      p.ruolo = ruolo; p.tappa = (d.get('tappa') || '').trim(); p.istruzioni = (d.get('istruzioni') || '').trim();
+      edP = null;
+      msg = 'Squadra aggiornata';
+    } else if (form.classList.contains('agg')) {
+      const ruolo = d.get('ruolo');
+      if (f.personalizzazioni.some(p => p.ruolo === ruolo))
+        return avvisa(`"${ruolo}" ha già una riga in "${f.titolo}"`, true);
+      f.personalizzazioni.push({ id: 'p' + uid(), ruolo, tappa: (d.get('tappa') || '').trim(), istruzioni: (d.get('istruzioni') || '').trim() });
+      msg = 'Squadra aggiunta';
+    } else {
+      const inizio = iso(d.get('inizio'));
+      if (!inizio) return avvisa('Scegli un orario di inizio valido', true);
+      f.titolo = (d.get('titolo') || '').trim() || 'Senza titolo';
+      f.inizio = inizio;
+      f.fine = d.get('fine') ? iso(d.get('fine')) : null;
+      f.note = (d.get('nota') || '').trim();
+      edF = null;
+      msg = 'Fase aggiornata';
+    }
+    disegna(); segnaSporco();
+    avvisa(msg);
   };
 
   $('#salva').onclick = async () => {
-    const b = $('#salva'); b.disabled = true; b.textContent = 'Salvo...';
+    const b = $('#salva');
+    attesa(b, 'Salvo...');
     try {
-      const r = await fetch(CFG.API + '/admin', {
+      const r = await chiedi(CFG.API + '/admin', {
         method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + S.token },
-        body: JSON.stringify({ azione: 'salva', tappe: Tappe, spostamenti: Spostamenti })
-      });
-      const d = await r.json();
+        body: JSON.stringify({ azione: 'salva', fasce: Fasce })
+      }, 15000);
+      const d = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(d.errore || 'Salvataggio fallito.');
-      if (/Token/.test(d.errore || '')) { S.token = null; store.del('token'); showRoles(); return; }
-      $('#aerr').textContent = `Salvato: ${d.tappe} tappe, ${d.spostamenti} spostamenti.`;
-    } catch (x) { $('#aerr').textContent = x.message; }
-    b.disabled = false; b.textContent = 'Salva sul server';
+      sporco = false;
+      $('#dirty').hidden = true;
+      $('#aerr').textContent = '';
+      avvisa(`Salvato: ${d.fasce} fasi`);
+    } catch (x) {
+      $('#aerr').textContent = x.message;
+      avvisa(x.message, true);
+    }
+    pronto(b);
   };
 
-  $('#expj').onclick = () => scarica('luogo.json', JSON.stringify({ tappe: Tappe, spostamenti: Spostamenti }, null, 2), 'application/json');
+  $('#expj').onclick = () => scarica('programma.json', JSON.stringify({ fasce: Fasce }, null, 2), 'application/json');
+
+  // Il CSV è una riga per personalizzazione: è la vista che serve per rivedere
+  // il piano su un foglio di calcolo, e ci sta anche la nota della fase.
   $('#expc').onclick = () => {
-    scarica('tappe.csv', csv([['id', 'nome'], ...Tappe.map(t => [t.id, t.nome])]), 'text/csv');
-    scarica('spostamenti.csv', csv([['id', 'da', 'a', 'istruzione'], ...Spostamenti.map(s => [s.id, s.da, s.a, s.istruzione])]), 'text/csv');
+    const righe = [['titolo', 'inizio', 'fine', 'nota', 'squadra', 'luogo', 'istruzioni']];
+    for (const f of Fasce) {
+      const ps = f.personalizzazioni || [];
+      if (!ps.length) righe.push([f.titolo, f.inizio, f.fine || '', f.note || '', '', '', '']);
+      for (const p of ps) righe.push([f.titolo, f.inizio, f.fine || '', f.note || '', p.ruolo, p.tappa, p.istruzioni]);
+    }
+    scarica('programma.csv', csv(righe), 'text/csv');
   };
-  $('#log').onclick = async () => { S.token = null; store.del('token'); showRoles(); };
+
+  $('#log').onclick = () => {
+    if (sporco && !confirm('Ci sono modifiche non salvate. Esci e scartale?')) return;
+    S.token = null; store.del('token'); S.admin = false;
+    showRoles();
+  };
   $('#esci').onclick = showTimeline;
 
   $('#doimp').onclick = () => {
@@ -459,20 +606,60 @@ function showAdmin() {
     try {
       if (testo.startsWith('{')) {
         const d = JSON.parse(testo);
-        if (!Array.isArray(d.tappe) || !Array.isArray(d.spostamenti)) throw new Error('Nel JSON mancano tappe o spostamenti.');
-        Tappe = d.tappe; Spostamenti = d.spostamenti;
+        if (!Array.isArray(d.fasce)) throw new Error('Nel JSON manca "fasce".');
+        // Una data non valida viene rifiutata qui, col nome della fase: entrare
+        // senza controllo rompeva l'intera pagina di amministrazione.
+        Fasce = d.fasce.map((f, n) => {
+          const nome = (f.titolo || '').trim() || (n + 1) + 'ª fase';
+          const inizio = iso(f.inizio);
+          if (!inizio) throw new Error(`"${nome}": inizio non è una data valida (es. 2026-11-14T09:00).`);
+          const fine = f.fine ? iso(f.fine) : null;
+          if (f.fine && !fine) throw new Error(`"${nome}": fine non è una data valida.`);
+          return {
+            id: f.id || 'f' + uid(), titolo: nome, inizio, fine, note: f.note || '',
+            personalizzazioni: (f.personalizzazioni || []).map(p => ({
+              id: p.id || 'p' + uid(), ruolo: p.ruolo, tappa: p.tappa || '', istruzioni: p.istruzioni || ''
+            }))
+          };
+        });
       } else {
         const righe = leggiCsv(testo);
-        const ch = Object.keys(righe[0] || {});
-        if (ch.includes('da') && ch.includes('a')) {
-          Spostamenti = righe.map((r, i) => ({ id: r.id || idUnico(slug(`${r.da}-${r.a}`), []), da: r.da, a: r.a, istruzione: r.istruzione || '' }));
-        } else if (ch.includes('nome')) {
-          Tappe = righe.map(r => ({ id: r.id || slug(r.nome), nome: r.nome }));
-        } else throw new Error('Il CSV deve avere le colonne "nome", oppure "da" e "a".');
+        if (!righe.length || !('titolo' in righe[0]))
+          throw new Error('Il CSV deve avere le colonne titolo, squadra, luogo, istruzioni.');
+        const perTitolo = new Map();
+        for (const r of righe) {
+          const k = (r.titolo || '').trim() || 'Senza titolo';
+          if (!perTitolo.has(k)) {
+            const inizio = iso(r.inizio);
+            if (!inizio) throw new Error(`"${k}": la colonna inizio non è una data valida.`);
+            const fine = r.fine ? iso(r.fine) : null;
+            if (r.fine && !fine) throw new Error(`"${k}": la colonna fine non è una data valida.`);
+            perTitolo.set(k, { id: 'f' + uid(), titolo: k, inizio, fine, note: r.nota || '', personalizzazioni: [] });
+          }
+          const f = perTitolo.get(k);
+          const sq = (r.squadra || '').trim();
+          if (sq && !f.personalizzazioni.some(p => p.ruolo === sq))
+            f.personalizzazioni.push({ id: 'p' + uid(), ruolo: sq, tappa: (r.luogo || '').trim(), istruzioni: (r.istruzioni || '').trim() });
+        }
+        Fasce = [...perTitolo.values()];
       }
-      $('#imp').value = ''; disegna();
+      $('#imp').value = '';
+      $('#aerr').textContent = '';
+      edF = edP = null;
+      disegna(); segnaSporco();
+      avvisa(`Importate ${Fasce.length} fasi`);
     } catch (x) { $('#aerr').textContent = 'Import non riuscito: ' + x.message; }
   };
+
+  // Prima mostra subito quello che c'è in memoria, poi allinea col server: se il
+  // token è scaduto il server lo dice, e non serve fingere.
+  disegna();
+  inCorso = true;
+  await carica();
+  inCorso = false;
+  if (!controllaToken()) return showRoles();
+  edF = edP = null;
+  disegna();
 }
 
 boot();

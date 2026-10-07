@@ -2,7 +2,12 @@ const { createHmac, timingSafeEqual } = require('crypto');
 
 /* Token admin: "payload.signatura". Nel payload c'è solo la scadenza — essere
    admin si deduce dal token, non da un campo che il telefono può cambiare. */
-const segreto = () => process.env.ADMIN_PASSWORD || 'sviluppo';
+const segreto = () => {
+  const p = process.env.ADMIN_PASSWORD;
+  if (p === '[SENSITIVE]')
+    throw new Error('ADMIN_PASSWORD è ancora "[SENSITIVE]": metti il valore vero in .vercel/.env.development.local');
+  return p || 'sviluppo';
+};
 const firma = p => createHmac('sha256', segreto()).update(p).digest('base64url');
 
 const rilasciaToken = (ttl = 12 * 3600e3) => {
@@ -36,10 +41,17 @@ const azzera = ip => FRENO.delete(ip);
 let app = null;
 function fs() {
   if (app) return app.firestore();
-  const grezza = process.env.FIREBASE_KEY;    // testo JSON del file di credenziali
-  if (!grezza) throw new Error('Manca la variabile FIREBASE_KEY su Vercel.');
-  const admin = require('firebase-admin');
-  app = admin.initializeApp({ credential: admin.credential.cert(JSON.parse(grezza)) });
+  const grezza = process.env.FIREBASE_KEY;
+  if (!grezza) throw new Error('Manca la variabile FIREBASE_KEY.');
+  if (grezza === '[SENSITIVE]')
+    throw new Error('FIREBASE_KEY è ancora "[SENSITIVE]": metti il valore vero in .vercel/.env.development.local');
+  let chiavi;
+  try { chiavi = JSON.parse(grezza); }
+  catch { throw new Error('FIREBASE_KEY non è JSON valido: deve stare tutto su una riga sola.'); }
+  let admin;
+  try { admin = require('firebase-admin'); }
+  catch { throw new Error('firebase-admin non è installato. Nella cartella del progetto lancia: npm install'); }
+  app = admin.initializeApp({ credential: admin.credential.cert(chiavi) });
   return app.firestore();
 }
 
