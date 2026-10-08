@@ -55,11 +55,11 @@ function fs() {
   return app.firestore();
 }
 
-const leggi = async (id, vuoto = []) => {
+const leggi = async (id, vuoto = null) => {
   const d = await fs().collection('config').doc(id).get();
-  return d.exists ? (d.data().items ?? vuoto) : vuoto;
+  return d.exists ? d.data() : vuoto;
 };
-const scrivi = (id, items) => fs().collection('config').doc(id)
-  .set({ items, aggiornato: new Date().toISOString() });
+const scrivi = (id, data) => fs().collection('config').doc(id)
+  .set({ ...data, aggiornato: new Date().toISOString() });
 
 module.exports = { rilasciaToken, verificaToken, confronta, troppo, nota, azzera, leggi, scrivi };
