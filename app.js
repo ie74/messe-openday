@@ -2,7 +2,7 @@
 /* ---------- Configurazione ---------- */
 const CFG = {
   API: '/api',              // '' = nessun server, l'app va coi dati di esempio
-  VAPID: '',                // chiave pubblica VAPID per le push
+  VAPID: 'BBxn7vitSX1STlCj3Nlo1frlbu0nSpwr4Ht2F-QXIOHZs1VL1sowzgt3EFuP_RfAqcARbkHEsoLJPxLBLwApwYA',                // chiave pubblica VAPID per le push
   ADMIN: 'Admin',
   GROUPS: [
     { label: 'Corridoio', units: [] },
@@ -226,7 +226,7 @@ async function subscribePush() {
       await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u8(CFG.VAPID) });
     await chiedi(CFG.API + '/subscribe', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subscription: sub, ruolo: S.role, admin: isAdmin() })
+      body: JSON.stringify({ subscription: sub, ruolo: S.role, gruppo: gruppo(), admin: isAdmin() })
     }, 15000);
   } catch (e) { console.warn('push', e); }
 }
@@ -369,6 +369,7 @@ function getStatoOrario(inizio, fine, now) {
   return 'next';
 }
 
+let ultimoHtml = '';
 function renderList(scroll) {
   if (inCorso) return;
   const now = new Date();
@@ -391,29 +392,40 @@ function renderList(scroll) {
     const istruzioniSpost = m?.istruzioniSpostamento || m?.istruzioni || '';
     const isFatto = completatiRole.includes(f.id);
 
+    // Scadenza = momento in cui la squadra deve essere in posizione.
+    // Dopo 1 minuto la fase diventa gialla; dopo 5 minuti rossa e lampeggiante.
+    // Si spegne se la squadra segna la tappa come completata o se la fase è finita.
+    const finita = tFineTappa && !isNaN(tFineTappa) && now >= tFineTappa;
+    const minRitardo = (now - tInizioTappa) / 60000;
+    const allarme = EventoAttivo && !isFatto && !finita
+      ? (minRitardo >= 5 ? 'alert' : minRitardo >= 1 ? 'warn' : '')
+      : '';
+    const pillAllarme = allarme === 'alert' ? '<span class="pill alarm-pill">Ritardo critico</span>'
+      : allarme === 'warn' ? '<span class="pill warn-pill">In ritardo</span>' : '';
+
     let res = '';
 
     // 1. Bolla Spostamento in Evidenza
     if (durataSpost > 0) {
-      res += `<li class="it it-spostamento ${stSpost}">
+      res += `<li class="it it-spostamento ${stSpost} ${allarme}">
         <div class="tm">${fmt(tInizio)}<small>fino ${fmt(tFineSpost)}</small></div>
         <div class="rail"></div>
         <div class="nd">
-          <h3>SPOSTAMENTO VERSO ${esc(luogoTeam).toUpperCase()}${stSpost === 'now' ? '<span class="pill shift-pill">In corso</span>' : ''}</h3>
+          <h3>SPOSTAMENTO VERSO ${esc(luogoTeam).toUpperCase()}${stSpost === 'now' ? '<span class="pill shift-pill">In corso</span>' : ''}${pillAllarme}</h3>
           ${istruzioniSpost ? `<p class="mut"><b>Istruzioni:</b> ${esc(istruzioniSpost)}</p>` : '<p class="mut">Raggiungi la postazione assegnata per tempo.</p>'}
         </div>
       </li>`;
     }
 
     // 2. Card Tappa / Attività
-    res += `<li class="it ${stTappa} ${isFatto ? 'fatto' : ''}">
+    res += `<li class="it ${stTappa} ${isFatto ? 'fatto' : ''} ${allarme}">
       <div class="tm">${fmt(tInizioTappa)}${dataOk(tFineTappa) ? `<small>fino ${fmt(tFineTappa)}</small>` : ''}</div>
       <div class="rail"></div>
       <div class="nd">
-        <h3>${esc(f.titolo)}${stTappa === 'now' ? '<span class="pill">In svolgimento</span>' : ''}${isFatto ? '<span class="pill ok-pill">Completata</span>' : ''}</h3>
+        <h3>${esc(f.titolo)}${stTappa === 'now' ? '<span class="pill">In svolgimento</span>' : ''}${isFatto ? '<span class="pill ok-pill">Completata</span>' : ''}${pillAllarme}</h3>
         <p class="loc">Luogo: ${esc(luogoTeam)}</p>
         ${noteTeam ? `<p class="mut">Nota: ${esc(noteTeam)}</p>` : ''}
-        
+
         <div class="chk-box">
           <button class="chk-btn ${isFatto ? 'done' : ''}" onclick="toggleCompletato('${f.id}')">
             ${isFatto ? '[X] Tappa completata' : '[ ] Segna come completata'}
@@ -425,6 +437,10 @@ function renderList(scroll) {
     return res;
   }).join('') || '<li class="vuoto">Nessuna fase in programma per questo team.</li>';
 
+  // Riscrive il DOM solo se qualcosa è cambiato: l'orologio aggiorna ogni secondo
+  // e riscrivere sempre il DOM farebbe ripartire il lampeggio di continuo.
+  if (!scroll && html === ultimoHtml) return;
+  ultimoHtml = html;
   $('#tl').innerHTML = html;
   if (scroll) $('.it.now, .it.next')?.scrollIntoView({ block: 'center' });
 }
@@ -443,14 +459,9 @@ async function showTimeline() {
     <div class="wrap">
       <div id="banner"></div>
       ${scheletro}
-      ${env.mobile ? '<button class="btn ghost" id="test">Invia notifica di prova</button>' : ''}
     </div>`;
 
   $('#chg').onclick = showRoles;
-  $('#test')?.addEventListener('click', async () => {
-    const reg = await navigator.serviceWorker.ready;
-    reg.showNotification('Notifica di prova', { body: 'Sistema di coordinamento Messe OpenDay attivo.', icon: 'icon-192.png' });
-  });
 
   $('#clock').innerHTML = fmtOrologio(new Date());
   clearInterval(S.timer); S.timer = setInterval(batto, 1000);
@@ -489,6 +500,7 @@ async function showAdmin() {
 
   screen.innerHTML = `<header class="top">
       <b>Pannello Admin</b>
+      <button class="chip" id="admTest">Test notifiche</button>
       <button class="chip" id="admLogout">Esci da Admin</button>
     </header>
     <div class="wrap">
@@ -513,6 +525,22 @@ async function showAdmin() {
 
       <div id="tabContent"></div>
     </div>`;
+
+  $('#admTest').onclick = async e => {
+    if (!ONLINE) return avvisa('Serve il server per il test notifiche', true);
+    const b = e.currentTarget;
+    attesa(b, 'Invio in corso...');
+    try {
+      const r = await chiedi(CFG.API + '/admin', {
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + S.token },
+        body: JSON.stringify({ azione: 'test_push' })
+      }, 15000);
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.errore || 'Errore sconosciuto');
+      avvisa(`Notifica inviata a ${d.inviati} dispositivi su ${d.totali}`);
+    } catch (x) { avvisa(x.message, true); }
+    finally { pronto(b); }
+  };
 
   $('#admLogout').onclick = () => {
     S.token = null; store.del('token');

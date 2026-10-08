@@ -29,7 +29,7 @@ self.addEventListener('push', e => {
   let d = {};
   try { d = e.data.json(); } catch { d = { body: e.data ? e.data.text() : '' }; }
   e.waitUntil(self.registration.showNotification(d.title || 'Avviso', {
-    body: d.body || '', icon: 'icon-192.png', badge: 'icon-192.png', tag: d.tag, data: { url: d.url || './' }
+    body: d.body || '', icon: 'icon-192.png', badge: 'icon-192.png', tag: d.tag, renotify: !!d.renotify, requireInteraction: !!d.urgente, vibrate: d.vibrate || [200, 100, 200], data: { url: d.url || './' }
   }));
 });
 

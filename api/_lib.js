@@ -4,9 +4,10 @@ const { createHmac, timingSafeEqual } = require('crypto');
    admin si deduce dal token, non da un campo che il telefono può cambiare. */
 const segreto = () => {
   const p = process.env.ADMIN_PASSWORD;
+  if (!p) throw new Error('ADMIN_PASSWORD non impostata: controlla .env.local (in locale) o le variabili su Vercel.');
   if (p === '[SENSITIVE]')
-    throw new Error('ADMIN_PASSWORD è ancora "[SENSITIVE]": metti il valore vero in .vercel/.env.development.local');
-  return p || 'sviluppo';
+    throw new Error('ADMIN_PASSWORD è ancora "[SENSITIVE]": metti il valore vero in .env.local');
+  return p;
 };
 const firma = p => createHmac('sha256', segreto()).update(p).digest('base64url');
 
@@ -62,4 +63,4 @@ const leggi = async (id, vuoto = null) => {
 const scrivi = (id, data) => fs().collection('config').doc(id)
   .set({ ...data, aggiornato: new Date().toISOString() });
 
-module.exports = { rilasciaToken, verificaToken, confronta, troppo, nota, azzera, leggi, scrivi };
+module.exports = { rilasciaToken, verificaToken, confronta, segreto, troppo, nota, azzera, leggi, scrivi };

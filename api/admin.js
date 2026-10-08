@@ -1,4 +1,5 @@
-const { rilasciaToken, verificaToken, confronta, troppo, nota, azzera, leggi, scrivi } = require('./_lib');
+const { rilasciaToken, verificaToken, confronta, segreto, troppo, nota, azzera, leggi, scrivi } = require('./_lib');
+const { invia } = require('./_push');
 
 module.exports = async (req, res) => {
   if (req.method !== 'POST') return res.status(405).json({ errore: 'Metodo non consentito' });
@@ -7,7 +8,9 @@ module.exports = async (req, res) => {
 
   if (azione === 'login') {
     if (troppo(ip)) return res.status(429).json({ errore: 'Troppi tentativi. Riprova tra qualche minuto.' });
-    if (!confronta(req.body.password, process.env.ADMIN_PASSWORD || '')) {
+    let pw;
+    try { pw = segreto(); } catch (e) { return res.status(500).json({ errore: e.message }); }
+    if (!confronta(req.body.password, pw)) {
       nota(ip);
       return res.status(401).json({ errore: 'Password errata.' });
     }
@@ -39,6 +42,21 @@ module.exports = async (req, res) => {
 
   const token = String(req.headers.authorization || '').replace(/^Bearer /, '');
   if (!verificaToken(token)) return res.status(401).json({ errore: 'Token mancante o scaduto: rientra come admin.' });
+
+  if (azione === 'test_push') {
+    try {
+      const lista = (await leggi('iscrizioni', { items: [] })).items || [];
+      let inviati = 0;
+      for (const sub of lista) {
+        const esito = await invia({ endpoint: sub.endpoint, keys: sub.keys }, {
+          title: 'Notifica di prova', body: 'Se la leggi, le notifiche funzionano su questo dispositivo.',
+          tag: 'prova', vibrate: [200, 100, 200]
+        });
+        if (esito === 'ok') inviati++;
+      }
+      return res.json({ ok: true, inviati, totali: lista.length });
+    } catch (e) { return res.status(500).json({ errore: e.message }); }
+  }
 
   if (azione === 'salva') {
     const { fasce, attivo } = req.body;

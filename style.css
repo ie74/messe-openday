@@ -892,3 +892,20 @@ input:checked + .slider:before {
 #toast.male {
     background: var(--danger);
 }
+/* ---------- Ritardi ---------- */
+.it.warn .nd {
+    background: #fff7d6;
+    border-left: 6px solid #e0a800;
+}
+.it.alert .nd {
+    background: #ffe5e2;
+    border: 2px solid #d62828;
+    animation: lampeggio 1s steps(1, end) infinite;
+}
+.it.alert h3 { color: #a10f0f; }
+@keyframes lampeggio { 50% { background: #ffffff; } }
+.pill.warn-pill { background: #e0a800; color: #1d1600; }
+.pill.alarm-pill { background: #d62828; color: #ffffff; }
+@media (prefers-reduced-motion: reduce) {
+    .it.alert .nd { animation: none; }
+}
