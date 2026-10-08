@@ -378,7 +378,8 @@ function renderList(scroll) {
 
   const html = ord.map((f) => {
     const m = f.mia || null;
-    const durataSpost = parseInt(f.durataSpostamento || 0, 10);
+    // Senza personalizzazione per questa squadra: niente spostamento, niente luogo personale.
+    const durataSpost = m ? parseInt(f.durataSpostamento || 0, 10) : 0;
     const tInizio = new Date(f.inizio);
     const tFineSpost = new Date(tInizio.getTime() + durataSpost * 60000);
     const tInizioTappa = durataSpost > 0 ? tFineSpost : tInizio;
@@ -387,18 +388,16 @@ function renderList(scroll) {
     const stSpost = durataSpost > 0 ? getStatoOrario(tInizio, tFineSpost, now) : null;
     const stTappa = getStatoOrario(tInizioTappa, tFineTappa, now);
 
-    const luogoTeam = m?.tappa || 'Luogo comune';
+    const luogoTeam = m?.tappa || '';
     const noteTeam = m?.note || f.note || '';
     const istruzioniSpost = m?.istruzioniSpostamento || m?.istruzioni || '';
     const isFatto = completatiRole.includes(f.id);
 
-    // Scadenza = momento in cui la squadra deve essere in posizione.
-    // Dopo 1 minuto la fase diventa gialla; dopo 5 minuti rossa e lampeggiante.
-    // Si spegne se la squadra segna la tappa come completata o se la fase è finita.
-    const finita = tFineTappa && !isNaN(tFineTappa) && now >= tFineTappa;
-    const minRitardo = (now - tInizioTappa) / 60000;
-    const allarme = EventoAttivo && !isFatto && !finita
-      ? (minRitardo >= 5 ? 'alert' : minRitardo >= 1 ? 'warn' : '')
+    // Ritardo = minuti passati dalla FINE della tappa, se non è ancora segnata come completata.
+    // Dopo 1 minuto: gialla. Dopo 5 minuti: rossa e lampeggiante.
+    const minRitardo = tFineTappa && !isNaN(tFineTappa) ? (now - tFineTappa) / 60000 : -1;
+    const allarme = EventoAttivo && !isFatto && minRitardo >= 1
+      ? (minRitardo >= 5 ? 'alert' : 'warn')
       : '';
     const pillAllarme = allarme === 'alert' ? '<span class="pill alarm-pill">Ritardo critico</span>'
       : allarme === 'warn' ? '<span class="pill warn-pill">In ritardo</span>' : '';
@@ -412,7 +411,7 @@ function renderList(scroll) {
         <div class="rail"></div>
         <div class="nd">
           <h3>SPOSTAMENTO VERSO ${esc(luogoTeam).toUpperCase()}${stSpost === 'now' ? '<span class="pill shift-pill">In corso</span>' : ''}${pillAllarme}</h3>
-          ${istruzioniSpost ? `<p class="mut"><b>Istruzioni:</b> ${esc(istruzioniSpost)}</p>` : '<p class="mut">Raggiungi la postazione assegnata per tempo.</p>'}
+          ${istruzioniSpost ? `<p class="mut"><b>Istruzioni:</b> ${esc(istruzioniSpost)}</p>` : ''}
         </div>
       </li>`;
     }
@@ -423,7 +422,7 @@ function renderList(scroll) {
       <div class="rail"></div>
       <div class="nd">
         <h3>${esc(f.titolo)}${stTappa === 'now' ? '<span class="pill">In svolgimento</span>' : ''}${isFatto ? '<span class="pill ok-pill">Completata</span>' : ''}${pillAllarme}</h3>
-        <p class="loc">Luogo: ${esc(luogoTeam)}</p>
+        ${luogoTeam ? `<p class="loc">Luogo: ${esc(luogoTeam)}</p>` : ''}
         ${noteTeam ? `<p class="mut">Nota: ${esc(noteTeam)}</p>` : ''}
 
         <div class="chk-box">

@@ -2,18 +2,18 @@ const { leggi, scrivi, confronta } = require('./_lib');
 const { invia } = require('./_push');
 const MIN = 60000;
 
-// Scadenza = momento in cui la squadra deve essere in posizione (stessa formula di app.js)
+// Scadenza = FINE della tappa (stessa logica di app.js). Senza fine, nessun sollecito.
 const scadenza = f => {
-  const inizio = new Date(f.inizio).getTime();
-  if (isNaN(inizio)) return null;
-  return inizio + parseInt(f.durataSpostamento || 0, 10) * MIN;
+  if (!f.fine) return null;
+  const fine = new Date(f.fine).getTime();
+  return isNaN(fine) ? null : fine;
 };
 
 const messaggio = (f, p, livello) => {
   const luogo = p.tappa || 'la postazione assegnata';
   return livello === 1
-    ? { title: 'Sei in ritardo', body: `${f.titolo}: raggiungi ${luogo}`, tag: `ritardo-${f.id}`, renotify: true, vibrate: [300, 150, 300] }
-    : { title: 'RITARDO CRITICO', body: `${f.titolo}: vai subito a ${luogo}`, tag: `ritardo-${f.id}`, renotify: true, urgente: true, vibrate: [600, 200, 600, 200, 600] };
+    ? { title: 'Tappa non ancora completata', body: `${f.titolo} (${luogo}): segnala il completamento`, tag: `ritardo-${f.id}`, renotify: true, vibrate: [300, 150, 300] }
+    : { title: 'RITARDO CRITICO', body: `${f.titolo} (${luogo}) è ancora aperta da 5 minuti`, tag: `ritardo-${f.id}`, renotify: true, urgente: true, vibrate: [600, 200, 600, 200, 600] };
 };
 
 // Chiamato ogni minuto da un cron esterno (es. cron-job.org) con Authorization: Bearer CRON_SECRET
