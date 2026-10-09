@@ -109,41 +109,65 @@ S.badge = store.get('badge', null);
 S.gruppo = store.get('gruppo', '');
 addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; $('#inst')?.removeAttribute('hidden'); });
 
-const GROUPS = CFG.GROUPS;
+// RuoliDB: caricato dinamicamente dal server. Fallback su CFG.GROUPS se offline.
+let RuoliDB = []; // Array di { nome, gruppo }
+
+const GROUPS = CFG.GROUPS; // solo come fallback
+
+// Ricostruisce le strutture derivate da RuoliDB (o CFG.GROUPS come fallback)
+function ricalcolaRuoli() {
+  const fonte = RuoliDB.length ? RuoliDB : CFG.GROUPS.flatMap(g =>
+    g.units.length ? g.units.map(u => ({ nome: u, gruppo: g.label })) : [{ nome: g.label, gruppo: g.label }]
+  );
+
+  // Ricrea GROUP_OF
+  GROUP_OF.clear();
+  fonte.forEach(r => {
+    GROUP_OF.set(r.nome, r.gruppo || r.nome);
+    if (r.gruppo) GROUP_OF.set(r.gruppo, r.gruppo);
+  });
+
+  // Ricrea TUTTE_LE_SQUADRE (solo nomi individuali)
+  TUTTE_LE_SQUADRE.length = 0;
+  fonte.forEach(r => { if (!TUTTE_LE_SQUADRE.includes(r.nome)) TUTTE_LE_SQUADRE.push(r.nome); });
+}
+
 const GROUP_OF = new Map();
-GROUPS.forEach(g => { GROUP_OF.set(g.label, g.label); g.units.forEach(u => GROUP_OF.set(u, g.label)); });
-
 const TUTTE_LE_SQUADRE = [];
-GROUPS.forEach(g => {
-  if (g.units.length) g.units.forEach(u => TUTTE_LE_SQUADRE.push(u));
-  else TUTTE_LE_SQUADRE.push(g.label);
-});
+ricalcolaRuoli(); // inizializzazione con fallback
 
-const isAdmin = () => S.role === CFG.ADMIN && !!S.token;
-const gruppo = () => (S.role && S.role !== CFG.ADMIN ? (S.gruppo || '') : '');
-const authHeaders = () => {
-  const h = { 'Content-Type': 'application/json' };
-  if (S.token) h.Authorization = 'Bearer ' + S.token;
-  if (S.badge) h['X-Badge'] = S.badge;
-  return h;
+// Genera le <option> per il select squadra nella tab Modifica Fasi.
+// Mostra: per ogni gruppo distinto → opzione "tutto il gruppo" + singoli nomi.
+const optSquadra = sel => {
+  const fonte = RuoliDB.length ? RuoliDB : CFG.GROUPS.flatMap(g =>
+    g.units.length ? g.units.map(u => ({ nome: u, gruppo: g.label })) : [{ nome: g.label, gruppo: g.label }]
+  );
+  const gruppi = [...new Map(fonte.map(r => [r.gruppo || r.nome, r.gruppo || r.nome])).keys()];
+  return gruppi.map(g => {
+    const membri = fonte.filter(r => (r.gruppo || r.nome) === g);
+    const haMembers = membri.length > 1 || (membri.length === 1 && membri[0].nome !== g);
+    return `<optgroup label="${esc(g)}">
+      <option value="${esc(g)}"${sel === g ? ' selected' : ''}>${esc(g)} — tutto il gruppo</option>
+      ${haMembers ? membri.map(r => `<option value="${esc(r.nome)}"${sel === r.nome ? ' selected' : ''}>${esc(r.nome)}</option>`).join('') : ''}
+    </optgroup>`;
+  }).join('');
 };
-const JSQR_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js';
-const QRGEN_URL = 'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js';
-const JSZIP_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
-const scriptCaricati = {};
-const loadScript = url => scriptCaricati[url] || (scriptCaricati[url] = new Promise((ok, ko) => {
-  const s = document.createElement('script');
-  s.src = url; s.onload = ok;
-  s.onerror = () => { delete scriptCaricati[url]; ko(new Error('libreria non caricata')); };
-  document.head.appendChild(s);
-}));
-const urlBadge = codice => `${location.origin}/?b=${codice}`;
-const sameSquadra = g => S.role && GROUP_OF.get(g.label) === gruppo();
 
-const optSquadra = sel => GROUPS.map(g =>
-  `<optgroup label="${esc(g.label)}"><option value="${esc(g.label)}"${sel === g.label ? ' selected' : ''}>${esc(g.label)} — tutta la squadra</option>` +
-  g.units.map(u => `<option value="${esc(u)}"${sel === u ? ' selected' : ''}>${esc(u)}</option>`).join('') +
-  '</optgroup>').join('');
+async function loadRuoliDB() {
+  if (!ONLINE) return;
+  try {
+    const r = await chiedi(CFG.API + '/admin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + S.token },
+      body: JSON.stringify({ azione: 'ruoli_lista' })
+    });
+    const d = await r.json();
+    if (r.ok && Array.isArray(d.ruoli)) {
+      RuoliDB = d.ruoli.map(r => ({ nome: r.nome, gruppo: r.gruppo || r.nome }));
+      ricalcolaRuoli();
+    }
+  } catch (e) { console.warn('loadRuoliDB:', e.message); }
+}
 
 /* ---------- Dati e Fasi ---------- */
 let Fasce = [];
@@ -582,8 +606,9 @@ async function showAdmin() {
   }
 
   inCorso = true;
-  await carica();
+  await Promise.all([carica(), loadRuoliDB()]);
   inCorso = false;
+
 
   screen.innerHTML = `<header class="top">
       <b>Pannello Admin</b>
