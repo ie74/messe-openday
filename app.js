@@ -2,8 +2,10 @@
 /* ---------- Configurazione ---------- */
 const CFG = {
   API: '/api',              // '' = nessun server, l'app va coi dati di esempio
-  VAPID: 'BBxn7vitSX1STlCj3Nlo1frlbu0nSpwr4Ht2F-QXIOHZs1VL1sowzgt3EFuP_RfAqcARbkHEsoLJPxLBLwApwYA',                // chiave pubblica VAPID per le push
+  VAPID: '',                // chiave pubblica VAPID per le push
   ADMIN: 'Admin',
+  // false = salta la schermata "installa l'app" (utile per i test). Da riattivare prima dell'evento.
+  CONTROLLA_INSTALLAZIONE: false,
   GROUPS: [
     { label: 'Corridoio', units: [] },
     { label: 'Aula', units: ['Aula 1', 'Aula 2', 'Aula 3', 'Aula 4', 'Aula 5', 'Aula 6', 'Aula 7', 'Aula 8'] }
@@ -103,6 +105,8 @@ const S = {
 };
 
 let installEvt = null;
+S.badge = store.get('badge', null);
+S.gruppo = store.get('gruppo', '');
 addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; $('#inst')?.removeAttribute('hidden'); });
 
 const GROUPS = CFG.GROUPS;
@@ -116,7 +120,24 @@ GROUPS.forEach(g => {
 });
 
 const isAdmin = () => S.role === CFG.ADMIN && !!S.token;
-const gruppo = () => (S.role && S.role !== CFG.ADMIN ? (GROUP_OF.get(S.role) || '') : '');
+const gruppo = () => (S.role && S.role !== CFG.ADMIN ? (S.gruppo || '') : '');
+const authHeaders = () => {
+  const h = { 'Content-Type': 'application/json' };
+  if (S.token) h.Authorization = 'Bearer ' + S.token;
+  if (S.badge) h['X-Badge'] = S.badge;
+  return h;
+};
+const JSQR_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js';
+const QRGEN_URL = 'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js';
+const JSZIP_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+const scriptCaricati = {};
+const loadScript = url => scriptCaricati[url] || (scriptCaricati[url] = new Promise((ok, ko) => {
+  const s = document.createElement('script');
+  s.src = url; s.onload = ok;
+  s.onerror = () => { delete scriptCaricati[url]; ko(new Error('libreria non caricata')); };
+  document.head.appendChild(s);
+}));
+const urlBadge = codice => `${location.origin}/?b=${codice}`;
 const sameSquadra = g => S.role && GROUP_OF.get(g.label) === gruppo();
 
 const optSquadra = sel => GROUPS.map(g =>
@@ -169,12 +190,12 @@ function demoFasce() {
 /* ---------- Boot & Schermata 1 & 2 ---------- */
 async function boot() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(console.warn);
-  if (env.mobile && !env.standalone) return showInstall();
+  if (CFG.CONTROLLA_INSTALLAZIONE && env.mobile && !env.standalone) return showInstall();
   if (env.mobile) await notifGate();
 
-  if (isAdmin()) showAdmin();
-  else if (S.role) showTimeline();
-  else showRoles();
+  if (isAdmin()) return showAdmin();
+  if (S.badge && await entraConBadge(S.badge, null, true)) return showTimeline();
+  showRoles();
 }
 
 function showInstall() {
@@ -225,7 +246,7 @@ async function subscribePush() {
     const sub = (await reg.pushManager.getSubscription()) ||
       await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u8(CFG.VAPID) });
     await chiedi(CFG.API + '/subscribe', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: authHeaders(),
       body: JSON.stringify({ subscription: sub, ruolo: S.role, gruppo: gruppo(), admin: isAdmin() })
     }, 15000);
   } catch (e) { console.warn('push', e); }
@@ -233,73 +254,138 @@ async function subscribePush() {
 
 /* ---------- Schermata 3: Scelta Ruolo ---------- */
 function showRoles() {
-  screen.innerHTML = `<div class="wrap"><h1>Dove lavori?</h1>
-    <p class="mut">Scegli la tua squadra per vedere tappe, spostamenti e istruzioni personalizzate.</p>
-    <div class="roles">
-      <button class="role role-admin" id="radm">Admin / Coordinatore<small>Richiede password</small></button>
-      ${GROUPS.map(g => `<button class="role${sameSquadra(g) ? ' on' : ''}" data-g="${esc(g.label)}">${esc(g.label)}${g.units.length ? `<small>${g.units.length} aule</small>` : ''}</button>`).join('')}
-    </div>
-    <div id="admbox"></div>
-    ${S.role && !isAdmin() ? '<button class="btn ghost" id="back">Torna alla timeline</button>' : ''}</div>`;
-
-  screen.querySelectorAll('.role[data-g]').forEach(b => b.onclick = () => {
-    const g = GROUPS.find(x => x.label === b.dataset.g);
-    g.units.length ? showUnits(g) : setRole(g.label);
-  });
-  $('#radm').onclick = adminForm;
-  $('#back')?.addEventListener('click', showTimeline);
+  inCorso = false;
+  screen.innerHTML = `<div class="wrap"><h1>Benvenuto</h1>
+    <p class="mut">Usa il badge della tua squadra per vedere tappe e istruzioni.</p>
+    <button class="btn" id="scan">Scansiona il badge</button>
+    <form class="box" id="codf">
+      <label for="cod">Oppure scrivi il codice stampato sul badge</label>
+      <input id="cod" autocomplete="off" autocapitalize="characters" placeholder="xxxx-xxxx-xxxx-xxxx">
+      <button class="btn ghost">Entra</button>
+      <p class="bad" id="cerr"></p>
+    </form>
+    <div id="scanbox"></div>
+    <button class="btn ghost" id="adm">Sono un admin</button>
+    <div id="admbox"></div></div>`;
+  $('#scan').onclick = avviaScanner;
+  $('#codf').onsubmit = async e => { e.preventDefault(); await entraConBadge($('#cod').value, $('#cerr')); };
+  $('#adm').onclick = adminForm;
 }
 
-function showUnits(g) {
-  screen.innerHTML = `<div class="wrap"><h1>${esc(g.label)}</h1>
-    <p class="mut">Scegli la tua aula specifica:</p>
-    <div class="roles">${g.units.map(u => `<button class="role${u === S.role ? ' on' : ''}" data-u="${esc(u)}">${esc(u)}</button>`).join('')}</div>
-    <button class="btn ghost" id="back">Torna indietro</button></div>`;
-  screen.querySelectorAll('.role').forEach(b => b.onclick = () => setRole(b.dataset.u));
-  $('#back').onclick = showRoles;
+function revocaBadge() {
+  S.badge = null; S.role = null; S.gruppo = '';
+  store.del('badge'); store.del('role'); store.del('gruppo');
+  avvisa('Badge non più valido: usa il tuo badge.', true);
+  showRoles();
 }
 
-function setRole(r) {
-  S.role = r; store.set('role', r);
-  subscribePush();
-  showTimeline();
+// Verifica il codice e salva il ruolo. Con silenzioso=true non cambia schermata.
+async function entraConBadge(codice, errEl, silenzioso = false) {
+  const c = String(codice || '').trim();
+  const errore = t => { if (errEl) errEl.textContent = t; else avvisa(t, true); };
+  if (!c) return errore('Scrivi il codice del badge.'), false;
+  if (!ONLINE) return errore('Serve il server per il badge.'), false;
+  try {
+    const r = await chiedi(CFG.API + '/badge', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ codice: c })
+    });
+    const d = await r.json();
+    if (!r.ok) {
+      if (silenzioso) { store.del('badge'); S.badge = null; return false; }
+      errore(d.errore || 'Badge non valido.');
+      return false;
+    }
+    S.badge = c; S.role = d.ruolo; S.gruppo = d.gruppo || '';
+    store.set('badge', c); store.set('role', S.role); store.set('gruppo', S.gruppo);
+    subscribePush();
+    if (!silenzioso) showTimeline();
+    return true;
+  } catch (e) {
+    // Senza rete, al riavvio si usa l'ultimo ruolo salvato
+    if (silenzioso && S.badge && S.role) return true;
+    errore('Server non raggiungibile.');
+    return false;
+  }
+}
+
+const estraiCodice = testo => {
+  try { return new URL(testo).searchParams.get('b') || ''; }
+  catch { return testo; }
+};
+
+async function avviaScanner() {
+  const box = $('#scanbox');
+  if (!navigator.mediaDevices?.getUserMedia) {
+    box.innerHTML = '<p class="mut">La fotocamera non è disponibile qui: usa il codice qui sopra.</p>';
+    return;
+  }
+  box.innerHTML = '<p class="mut">Carico il lettore...</p>';
+  try { await loadScript(JSQR_URL); }
+  catch { box.innerHTML = '<p class="bad">Lettore QR non caricato: usa il codice.</p>'; return; }
+
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } }); }
+  catch { box.innerHTML = '<p class="bad">Permesso fotocamera negato: usa il codice.</p>'; return; }
+
+  box.innerHTML = `<video id="vid" playsinline muted style="width:100%;border-radius:8px"></video>
+    <p class="mut">Inquadra il QR del badge</p>
+    <button class="btn ghost" id="stopScan">Chiudi fotocamera</button>`;
+  const video = $('#vid');
+  video.srcObject = stream;
+  await video.play();
+
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  let attivo = true;
+  const stop = () => { attivo = false; stream.getTracks().forEach(t => t.stop()); box.innerHTML = ''; };
+  $('#stopScan').onclick = stop;
+
+  const passo = async () => {
+    if (!attivo) return;
+    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+      canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+      ctx.drawImage(video, 0, 0);
+      const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const letto = window.jsQR(img.data, img.width, img.height);
+      const codice = letto ? estraiCodice(letto.data) : '';
+      if (codice) {
+        stop();
+        await entraConBadge(codice, null);
+        return;
+      }
+    }
+    requestAnimationFrame(passo);
+  };
+  requestAnimationFrame(passo);
 }
 
 function adminForm() {
-  $('#admbox').innerHTML = `<form class="box" id="af"><label for="pw">Password Admin</label>
-    <input type="password" id="pw" autocomplete="current-password" placeholder="Inserisci la password" required>
-    <button class="btn">Accedi a Pannello Admin</button><p class="bad" id="err" style="margin-top:8px"></p></form>`;
+  $('#admbox').innerHTML = `<form class="box" id="af">
+    <label for="pw">Password admin</label>
+    <input type="password" id="pw" autocomplete="current-password" required>
+    <button class="btn">Entra</button>
+    <p class="bad" id="err"></p>
+  </form>`;
   $('#af').onsubmit = async e => {
     e.preventDefault();
-    const err = $('#err'), b = $('#af').querySelector('button');
-    if (!ONLINE) {
-      S.role = CFG.ADMIN; store.set('role', CFG.ADMIN);
-      S.token = 'demo-token'; store.set('token', 'demo-token');
-      avvisa('Accesso Admin in modalità demo');
-      return showAdmin();
-    }
-    attesa(b, 'Verifico password...');
+    const err = $('#err');
+    if (!ONLINE) { err.textContent = 'Serve il server per il login admin.'; return; }
     try {
       const r = await chiedi(CFG.API + '/admin', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ azione: 'login', password: $('#pw').value })
-      }, 12000);
-      const d = await r.json().catch(() => ({}));
+      });
+      const d = await r.json();
       if (!r.ok) throw new Error(d.errore || 'Password errata.');
-      S.token = d.token; store.set('token', d.token);
+      S.token = d.token; store.set('token', S.token);
+      S.badge = null; store.del('badge');
       S.role = CFG.ADMIN; store.set('role', CFG.ADMIN);
-      err.textContent = '';
-      avvisa('Accesso consentito');
+      S.gruppo = ''; store.set('gruppo', '');
       showAdmin();
-    } catch (x) {
-      err.textContent = x.message;
-      avvisa(x.message, true);
-    }
-    pronto(b);
+    } catch (x) { err.textContent = x.message || 'Password errata o server non raggiungibile.'; }
   };
 }
 
-/* ---------- Caricamento Dati ---------- */
 async function carica() {
   if (!ONLINE) {
     Fasce = demoFasce();
@@ -311,8 +397,9 @@ async function carica() {
     const p = new URLSearchParams({ ruolo: S.role || '', gruppo: gruppo() });
     const r = await chiedi(CFG.API + '/programma?' + p, {
       cache: 'no-store',
-      headers: S.token ? { Authorization: 'Bearer ' + S.token } : {}
+      headers: authHeaders()
     });
+    if (r.status === 401 && !S.token) { revocaBadge(); return { revocato: true }; }
     if (!r.ok) throw new Error('Il server ha risposto ' + r.status + '.');
     const d = await r.json();
     store.set('programma', d);
@@ -352,7 +439,7 @@ async function toggleCompletato(fasciaId) {
   if (ONLINE) {
     try {
       await chiedi(CFG.API + '/admin', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: authHeaders(),
         body: JSON.stringify({ azione: 'segna_completato', ruolo: r, fasciaId, completato: !fatto })
       });
     } catch (e) { console.warn('Errore salvataggio completamento', e); }
@@ -466,6 +553,7 @@ async function showTimeline() {
   clearInterval(S.timer); S.timer = setInterval(batto, 1000);
 
   const d = await carica();
+  if (d.revocato) return;
   inCorso = false;
 
   let bHtml = '';
@@ -520,6 +608,7 @@ async function showAdmin() {
         <button class="tab-btn ${S.tabAdmin === 'dashboard' ? 'active' : ''}" id="tabDash">Status Squadre</button>
         <button class="tab-btn ${S.tabAdmin === 'timeline' ? 'active' : ''}" id="tabTl">Timeline Globale</button>
         <button class="tab-btn ${S.tabAdmin === 'modifica' ? 'active' : ''}" id="tabMod">Modifica Fasi</button>
+        <button class="tab-btn ${S.tabAdmin === 'ruoli' ? 'active' : ''}" id="tabRuoli">Ruoli e badge</button>
       </div>
 
       <div id="tabContent"></div>
@@ -629,7 +718,7 @@ async function showAdmin() {
       });
       html += '</ol>';
       c.innerHTML = html;
-    } else {
+    } else if (S.tabAdmin === 'modifica') {
       c.innerHTML = `
         <form class="box" id="ff">
           <h3>Nuova Fase</h3>
@@ -657,18 +746,6 @@ async function showAdmin() {
         <button class="btn ghost" id="doimp">Importa programma</button>
         <p class="bad" id="aerr" style="margin-top:8px"></p>
       `;
-
-function calcolaProssimoInizio() {
-  if (!Fasce.length) return Date.now();
-  const ord = [...Fasce].sort((a, b) => new Date(a.inizio) - new Date(b.inizio));
-  const ultima = ord[ord.length - 1];
-  if (ultima && ultima.fine && dataOk(ultima.fine)) {
-    return new Date(ultima.fine).getTime();
-  } else if (ultima && ultima.inizio && dataOk(ultima.inizio)) {
-    return new Date(ultima.inizio).getTime() + 30 * 60000;
-  }
-  return Date.now();
-}
 
       $('#ff [name=inizio]').value = perInput(calcolaProssimoInizio());
       $('#ff').onsubmit = e => {
@@ -768,20 +845,36 @@ function calcolaProssimoInizio() {
           avvisa(`Importate ${Fasce.length} fasi`);
         } catch (x) { $('#aerr').textContent = 'Import non riuscito: ' + x.message; }
       };
+    } else if (S.tabAdmin === 'ruoli') {
+      renderRuoli(c);
     }
   };
 
   $('#tabDash').onclick = () => { S.tabAdmin = 'dashboard'; updateTabs(); renderTab(); };
   $('#tabTl').onclick = () => { S.tabAdmin = 'timeline'; updateTabs(); renderTab(); };
   $('#tabMod').onclick = () => { S.tabAdmin = 'modifica'; updateTabs(); renderTab(); };
+  $('#tabRuoli').onclick = () => { S.tabAdmin = 'ruoli'; updateTabs(); renderTab(); };
 
   function updateTabs() {
     $('#tabDash').className = `tab-btn ${S.tabAdmin === 'dashboard' ? 'active' : ''}`;
     $('#tabTl').className = `tab-btn ${S.tabAdmin === 'timeline' ? 'active' : ''}`;
     $('#tabMod').className = `tab-btn ${S.tabAdmin === 'modifica' ? 'active' : ''}`;
+    $('#tabRuoli').className = `tab-btn ${S.tabAdmin === 'ruoli' ? 'active' : ''}`;
   }
 
   renderTab();
+}
+
+function calcolaProssimoInizio() {
+  if (!Fasce.length) return Date.now();
+  const ord = [...Fasce].sort((a, b) => new Date(a.inizio) - new Date(b.inizio));
+  const ultima = ord[ord.length - 1];
+  if (ultima && ultima.fine && dataOk(ultima.fine)) {
+    return new Date(ultima.fine).getTime();
+  } else if (ultima && ultima.inizio && dataOk(ultima.inizio)) {
+    return new Date(ultima.inizio).getTime() + 30 * 60000;
+  }
+  return Date.now();
 }
 
 const segnaSporco = () => {
@@ -909,6 +1002,161 @@ function disegnaFasiEditor() {
     disegnaFasiEditor(); segnaSporco();
     avvisa(msg);
   };
+}
+
+/* ---------- Tab Ruoli & Badge ---------- */
+async function renderRuoli(c) {
+  c.innerHTML = `<p class="mut" style="margin-top:12px">Carico i ruoli...</p>`;
+
+  let ruoli = [];
+  if (ONLINE) {
+    try {
+      const r = await chiedi(CFG.API + '/admin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + S.token },
+        body: JSON.stringify({ azione: 'ruoli_lista' })
+      });
+      const d = await r.json();
+      if (r.ok) ruoli = d.ruoli || [];
+      else avvisa(d.errore || 'Errore nel caricamento dei ruoli', true);
+    } catch (e) {
+      avvisa('Server non raggiungibile: ' + e.message, true);
+    }
+  }
+
+  const disegna = () => {
+    let html = `
+      <h2 style="margin-top:16px">Ruoli e Badge</h2>
+      <p class="mut">Ogni squadra accede tramite il suo codice badge univoco. Clicca "QR" per generare e stampare il QR di accesso, oppure "Rigenera" per invalidare il vecchio codice.</p>`;
+
+    if (!ONLINE) {
+      html += `<div class="banner bad">Il server non è raggiungibile. I ruoli non sono modificabili offline.</div>`;
+    } else if (!ruoli.length) {
+      html += `<p class="mut" style="margin-top:16px">Nessun ruolo configurato. Aggiungi i ruoli qui sotto.</p>`;
+    } else {
+      html += `<ul class="lst" style="margin-top:12px" id="listaRuoli">`;
+      ruoli.forEach((r, i) => {
+        const link = urlBadge(r.badge);
+        html += `<li class="fz">
+          <div class="riga">
+            <div style="flex:1; min-width:0">
+              <b>${esc(r.nome)}</b>
+              ${r.gruppo && r.gruppo !== r.nome ? `<small class="mut"> — gruppo: ${esc(r.gruppo)}</small>` : ''}
+              <br><code style="font-size:0.78rem; color:var(--muted); word-break:break-all">${esc(r.badge)}</code>
+            </div>
+            <div class="btnx" style="gap:6px; flex-wrap:wrap">
+              <button class="btn ghost" style="font-size:0.8rem; padding:4px 10px" data-qr="${esc(r.badge)}" data-link="${esc(link)}">QR</button>
+              <button class="btn ghost" style="font-size:0.8rem; padding:4px 10px" data-rigenera="${esc(r.nome)}" data-i="${i}">Rigenera</button>
+            </div>
+          </div>
+        </li>`;
+      });
+      html += `</ul>`;
+    }
+
+    // Form nuovo ruolo
+    html += `
+      <form class="box" id="fNuovoRuolo" style="margin-top:24px">
+        <h3>Aggiungi / Modifica Ruoli</h3>
+        <p class="mut" style="font-size:0.85rem">Modifica la lista completa dei ruoli. I badge esistenti vengono conservati se il nome non cambia.</p>
+        <textarea id="ruoliJson" rows="10" style="font-family:monospace; font-size:0.82rem; width:100%; box-sizing:border-box">${esc(JSON.stringify(ruoli.map(r => ({ nome: r.nome, gruppo: r.gruppo || '' })), null, 2))}</textarea>
+        <p class="mut" style="font-size:0.78rem; margin-top:4px">Formato: array di oggetti <code>{"nome":"...", "gruppo":"..."}</code>. Il campo gruppo può essere uguale al nome o vuoto.</p>
+        <button class="btn" id="btnSalvaRuoli">Salva ruoli</button>
+        <p class="bad" id="ruoliErr"></p>
+      </form>
+
+      <div id="qrPreview" style="display:none; text-align:center; margin-top:16px; padding:16px; background:var(--surface); border-radius:12px">
+        <p id="qrLabel" class="mut" style="margin-bottom:8px"></p>
+        <div id="qrCanvas"></div>
+        <a id="qrLink" class="btn ghost" style="display:inline-block; margin-top:10px; font-size:0.85rem" target="_blank">Apri link badge</a>
+        <button class="btn ghost" id="qrChiudi" style="margin-top:8px; font-size:0.85rem">Chiudi</button>
+      </div>`;
+
+    c.innerHTML = html;
+
+    // Salva ruoli modificati
+    $('#fNuovoRuolo').onsubmit = async e => {
+      e.preventDefault();
+      const btn = $('#btnSalvaRuoli');
+      const err = $('#ruoliErr');
+      if (!ONLINE) { err.textContent = 'Serve il server per salvare i ruoli.'; return; }
+      let nuovi;
+      try { nuovi = JSON.parse($('#ruoliJson').value); }
+      catch { err.textContent = 'JSON non valido: controlla la sintassi.'; return; }
+      if (!Array.isArray(nuovi)) { err.textContent = 'Il JSON deve essere un array.'; return; }
+      attesa(btn, 'Salvo...');
+      try {
+        // Preserva badge esistenti dove il nome coincide
+        const payload = nuovi.map(n => {
+          const vecchio = ruoli.find(v => v.nome === n.nome);
+          return { nome: String(n.nome || '').trim(), gruppo: String(n.gruppo || n.nome || '').trim(), badge: vecchio?.badge };
+        });
+        const r = await chiedi(CFG.API + '/admin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + S.token },
+          body: JSON.stringify({ azione: 'ruoli_salva', ruoli: payload })
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.errore || 'Errore salvataggio');
+        ruoli = d.ruoli || payload;
+        avvisa(`Salvati ${ruoli.length} ruoli`);
+        err.textContent = '';
+        disegna();
+      } catch (x) { err.textContent = x.message; avvisa(x.message, true); }
+      finally { pronto(btn); }
+    };
+
+    // Rigenera badge
+    c.querySelectorAll('[data-rigenera]').forEach(btn => {
+      btn.onclick = async () => {
+        const nome = btn.dataset.rigenera;
+        if (!confirm(`Rigenerare il badge per "${nome}"? Il vecchio codice smetterà di funzionare.`)) return;
+        try {
+          const r = await chiedi(CFG.API + '/admin', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + S.token },
+            body: JSON.stringify({ azione: 'ruoli_rigenera', nome })
+          });
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.errore || 'Errore rigenerazione');
+          const idx = ruoli.findIndex(x => x.nome === nome);
+          if (idx >= 0) ruoli[idx].badge = d.badge;
+          avvisa(`Badge rigenerato per ${nome}`);
+          disegna();
+        } catch (x) { avvisa(x.message, true); }
+      };
+    });
+
+    // Mostra QR
+    c.querySelectorAll('[data-qr]').forEach(btn => {
+      btn.onclick = async () => {
+        const codice = btn.dataset.qr;
+        const link = btn.dataset.link;
+        const preview = $('#qrPreview');
+        const canvas = $('#qrCanvas');
+        const label = $('#qrLabel');
+        const qrLink = $('#qrLink');
+        canvas.innerHTML = '<p class="mut">Carico il generatore QR...</p>';
+        preview.style.display = 'block';
+        preview.scrollIntoView({ block: 'center' });
+        label.textContent = `Badge: ${codice}`;
+        qrLink.href = link;
+        $('#qrChiudi').onclick = () => { preview.style.display = 'none'; };
+        try {
+          await loadScript(QRGEN_URL);
+          const qr = window.qrcode(0, 'M');
+          qr.addData(link);
+          qr.make();
+          canvas.innerHTML = qr.createImgTag(4, 8);
+        } catch (err) {
+          canvas.innerHTML = `<p class="mut" style="word-break:break-all">${esc(link)}</p>`;
+          avvisa('Generatore QR non caricato: copia il link manualmente.', true);
+        }
+      };
+    });
+  };
+
+  disegna();
 }
 
 boot();

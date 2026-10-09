@@ -909,3 +909,23 @@ input:checked + .slider:before {
 @media (prefers-reduced-motion: reduce) {
     .it.alert .nd { animation: none; }
 }
+
+/* ---------- Badge e tab Ruoli ---------- */
+.ruoli-admin { display: grid; gap: 16px; }
+.ruolo-riga { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: center; margin-bottom: 8px; }
+.ruolo-riga input {
+    width: 100%; padding: 10px; border-radius: 6px;
+    border: 2px solid var(--line); background: var(--bg); color: var(--tx); font: inherit;
+}
+.ruoli-azioni { display: flex; flex-wrap: wrap; gap: 8px; }
+.ruoli-azioni .btn { width: auto; margin-top: 0; }
+.qr-griglia { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+.qr-card {
+    display: grid; justify-items: center; gap: 4px; padding: 12px;
+    background: var(--panel); border-radius: 8px; text-align: center;
+}
+.qr-img { width: 100%; max-width: 180px; background: #fff; padding: 6px; border-radius: 6px; }
+.qr-card code { font-size: .8rem; color: var(--mut); word-break: break-all; }
+.qr-azioni { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+.banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.banner .chip { margin-left: auto; }

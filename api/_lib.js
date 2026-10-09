@@ -63,4 +63,16 @@ const leggi = async (id, vuoto = null) => {
 const scrivi = (id, data) => fs().collection('config').doc(id)
   .set({ ...data, aggiornato: new Date().toISOString() });
 
-module.exports = { rilasciaToken, verificaToken, confronta, segreto, troppo, nota, azzera, leggi, scrivi };
+/* Ruoli e badge. Ogni ruolo ha un codice (badge) che il telefono presenta: il
+   server risolve il ruolo da lì, e il telefono non può dichiararne uno proprio. */
+const normalizzaCodice = c => String(c || '').toLowerCase().replace(/[^0-9a-f]/g, '');
+const generaCodice = () => require('crypto').randomBytes(8).toString('hex').match(/.{4}/g).join('-');
+const leggiRuoli = async () => (await leggi('ruoli', { items: [] })).items || [];
+const trovaRuolo = async codice => {
+    const c = normalizzaCodice(codice);
+    if (c.length < 16) return null;
+    return (await leggiRuoli()).find(r => normalizzaCodice(r.badge) === c) || null;
+};
+
+module.exports = { rilasciaToken, verificaToken, confronta, segreto, troppo, nota, azzera, leggi, scrivi,
+    normalizzaCodice, generaCodice, leggiRuoli, trovaRuolo };
