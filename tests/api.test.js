@@ -135,3 +135,73 @@ test('test notifiche rimosso; azioni admin e metodi restano protetti', async () 
   assert.equal((await f.call(f.admin, { azione: 'ruoli_lista' })).code, 401);
   assert.equal((await f.call(f.admin, {}, {}, 'GET')).code, 405);
 });
+
+test('creare un ruolo conserva badge e programma e abilita subito accesso e istruzioni di gruppo', async () => {
+  const f = fixture(), roles = structuredClone(f.docs.get('ruoli').items);
+  f.docs.set('programma', { attivo: true, completamenti: { C1: ['f1'] }, fasce: [
+    { id: 'f1', personalizzazioni: [{ ruolo: 'Corridoio', tappa: 'Atrio' }] },
+    { id: 'f2', personalizzazioni: [
+      { ruolo: 'Corridoio', tappa: 'Atrio' }, { ruolo: 'C3', tappa: 'Laboratorio' }
+    ] }
+  ] });
+  const before = structuredClone(f.docs.get('programma'));
+  const result = await f.call(f.admin,
+    { azione: 'ruoli_crea', nome: '  C3  ', gruppo: '  Corridoio  ', badge: 'inventato' }, f.auth);
+  assert.equal(result.code, 200);
+  assert.deepEqual(result.data.ruoli.slice(0, 2), roles);
+  const role = result.data.ruolo;
+  assert.equal(role.nome, 'C3');
+  assert.equal(role.gruppo, 'Corridoio');
+  assert.match(role.badge, /^[0-9a-f]{4}(?:-[0-9a-f]{4}){3}$/);
+  assert.deepEqual(f.docs.get('programma'), before);
+  const login = await f.call(f.badge, { codice: role.badge });
+  assert.equal(login.data.ruolo, 'C3');
+  assert.equal(login.data.gruppo, 'Corridoio');
+  const view = await f.call(f.programma, {}, { 'x-badge': role.badge }, 'GET');
+  assert.equal(view.data.fasce[0].mia.tappa, 'Atrio');
+  assert.equal(view.data.fasce[1].mia.tappa, 'Laboratorio');
+});
+
+test('la creazione richiede admin, nome e gruppo validi e un nome unico', async () => {
+  const f = fixture(), before = structuredClone(f.docs.get('ruoli'));
+  assert.equal((await f.call(f.admin, { azione: 'ruoli_crea', nome: 'C3', gruppo: 'Aula' })).code, 401);
+  for (const fields of [
+    {}, { nome: 'C3' }, { nome: ' ', gruppo: 'Aula' }, { nome: 'C3', gruppo: ' ' },
+    { nome: {}, gruppo: 'Aula' }, { nome: 'C3', gruppo: [] }, { nome: 'aDmIn', gruppo: 'Aula' }
+  ]) assert.equal((await f.call(f.admin, { azione: 'ruoli_crea', ...fields }, f.auth)).code, 400);
+  const duplicate = await f.call(f.admin, { azione: 'ruoli_crea', nome: ' c1 ', gruppo: 'Altro' }, f.auth);
+  assert.equal(duplicate.code, 409);
+  assert.match(duplicate.data.errore, /esiste già/);
+  assert.deepEqual(f.docs.get('ruoli'), before);
+});
+
+test('si può creare il primo ruolo anche con un gruppo nuovo', async () => {
+  const f = fixture();
+  f.docs.delete('ruoli');
+  const result = await f.call(f.admin, { azione: 'ruoli_crea', nome: 'Guida 1', gruppo: 'Guide' }, f.auth);
+  assert.equal(result.code, 200);
+  assert.equal(result.data.ruoli.length, 1);
+  assert.equal(f.docs.get('ruoli').items[0].gruppo, 'Guide');
+});
+
+test('creazioni simultanee e rigenerazione badge conservano tutti i ruoli', async () => {
+  const f = fixture();
+  const responses = await Promise.all([
+    f.call(f.admin, { azione: 'ruoli_crea', nome: 'C3', gruppo: 'Corridoio' }, f.auth),
+    f.call(f.admin, { azione: 'ruoli_crea', nome: 'Aula 1', gruppo: 'Aula' }, f.auth),
+    f.call(f.admin, { azione: 'ruoli_rigenera', nome: 'C1' }, f.auth)
+  ]);
+  assert.equal(responses.every(r => r.code === 200), true);
+  assert.deepEqual(f.docs.get('ruoli').items.map(r => r.nome).sort(), ['Aula 1', 'C1', 'C2', 'C3']);
+  assert.equal(f.docs.get('ruoli').items[1].badge, '2222-2222-2222-2222');
+  assert.equal((await f.call(f.badge, { codice: '1111-1111-1111-1111' })).code, 401);
+  assert.ok(f.retries() > 0);
+});
+
+test('due admin non possono creare simultaneamente lo stesso nome', async () => {
+  const f = fixture();
+  const responses = await Promise.all(['C3', 'c3'].map(nome => f.call(f.admin,
+    { azione: 'ruoli_crea', nome, gruppo: 'Corridoio' }, f.auth)));
+  assert.deepEqual(responses.map(r => r.code).sort(), [200, 409]);
+  assert.equal(f.docs.get('ruoli').items.length, 3);
+});

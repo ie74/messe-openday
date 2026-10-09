@@ -26,6 +26,20 @@ Senza server o credenziali, l'app mostra l'ultimo programma salvato sul disposit
 se presente. I completamenti richiedono una conferma del server; non vengono
 accodati per l'invio offline.
 
+## Creare un ruolo
+
+Nel pannello admin, aprire **Ruoli e Badge**, compilare **Nome del ruolo** e
+**Gruppo di appartenenza**, poi premere **Crea ruolo**. Si può scegliere un gruppo
+già presente o scriverne uno nuovo. Il badge viene generato dal server ed è subito
+disponibile nell'elenco, insieme al pulsante QR.
+
+Il nuovo ruolo compare anche nella dashboard e nelle personalizzazioni delle fasi.
+Riceve le istruzioni assegnate al suo gruppo; le istruzioni specifiche del ruolo
+hanno precedenza. Nome e gruppo sono obbligatori; i nomi duplicati, anche con
+maiuscole diverse, vengono rifiutati. Il nome Admin è riservato.
+La creazione è transazionale e conserva i ruoli e i badge già presenti.
+L'editor JSON della lista completa rimane nella sezione **Gestione avanzata**.
+
 ## Rimozione del sistema di notifiche
 
 L'app non richiede permessi di notifica e non invia push. Sono stati rimossi

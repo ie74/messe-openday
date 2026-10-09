@@ -55,6 +55,28 @@ module.exports = async (req, res) => {
     catch (e) { return res.status(500).json({ errore: e.message }); }
   }
 
+  if (azione === 'ruoli_crea') {
+    const { nome: datoNome, gruppo: datoGruppo } = req.body;
+    if (typeof datoNome !== 'string' || typeof datoGruppo !== 'string')
+      return res.status(400).json({ errore: 'Inserisci nome e gruppo del ruolo.' });
+    const nome = datoNome.trim(), gruppo = datoGruppo.trim();
+    if (!nome || !gruppo)
+      return res.status(400).json({ errore: 'Nome e gruppo sono obbligatori.' });
+    if (nome.toLowerCase() === 'admin')
+      return res.status(400).json({ errore: 'Il nome Admin è riservato all’amministratore.' });
+    const ruolo = { nome, gruppo, badge: generaCodice() };
+    try {
+      // Aggiunge al documento corrente, anche se altri admin creano ruoli insieme.
+      const doc = await aggiorna('ruoli', corrente => {
+        const lista = corrente.items || [];
+        if (lista.some(r => r.nome.toLowerCase() === nome.toLowerCase()))
+          throw Object.assign(new Error(`Il ruolo "${nome}" esiste già.`), { status: 409 });
+        return { ...corrente, items: [...lista, ruolo] };
+      }, { items: [] });
+      return res.json({ ok: true, ruolo, ruoli: doc.items });
+    } catch (e) { return res.status(e.status || 500).json({ errore: e.message }); }
+  }
+
   if (azione === 'ruoli_salva') {
     const nuovi = req.body.ruoli;
     if (!Array.isArray(nuovi)) return res.status(400).json({ errore: 'Dati non validi.' });
@@ -97,13 +119,15 @@ module.exports = async (req, res) => {
   if (azione === 'ruoli_rigenera') {
     const { nome } = req.body || {};
     try {
-      const lista = await leggiRuoli();
-      const r = lista.find(x => x.nome === nome);
-      if (!r) return res.status(404).json({ errore: 'Ruolo non trovato.' });
-      r.badge = generaCodice();
-      await scrivi('ruoli', { items: lista });
-      res.json({ ok: true, badge: r.badge });
-    } catch (e) { res.status(500).json({ errore: e.message }); }
+      const badge = generaCodice();
+      await aggiorna('ruoli', corrente => {
+        const lista = corrente.items || [];
+        if (!lista.some(r => r.nome === nome))
+          throw Object.assign(new Error('Ruolo non trovato.'), { status: 404 });
+        return { ...corrente, items: lista.map(r => r.nome === nome ? { ...r, badge } : r) };
+      });
+      res.json({ ok: true, badge });
+    } catch (e) { res.status(e.status || 500).json({ errore: e.message }); }
     return;
   }
 

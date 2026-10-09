@@ -1088,15 +1088,34 @@ async function renderRuoli(c) {
     }
   }
 
+  const aggiornaLista = lista => {
+    ruoli = lista;
+    RuoliDB = ruoli.map(r => ({ nome: r.nome, gruppo: r.gruppo || r.nome }));
+    ricalcolaRuoli();
+  };
+  aggiornaLista(ruoli);
+  let creazioneInCorso = false;
+
   const disegna = () => {
     let html = `
       <h2 style="margin-top:16px">Ruoli e Badge</h2>
-      <p class="mut">Ogni squadra accede tramite il suo codice badge univoco. Clicca "QR" per generare e stampare il QR di accesso, oppure "Rigenera" per invalidare il vecchio codice.</p>`;
+      <p class="mut">Ogni squadra accede tramite il suo codice badge univoco. Clicca "QR" per generare e stampare il QR di accesso, oppure "Rigenera" per invalidare il vecchio codice.</p>
+      <form class="box" id="fNuovoRuolo">
+        <h3>Crea un ruolo</h3>
+        <label for="nomeRuolo">Nome del ruolo</label>
+        <input type="text" id="nomeRuolo" name="nome" required autocomplete="off" placeholder="es. Aula 9" aria-describedby="nuovoRuoloErr">
+        <label for="gruppoRuolo">Gruppo di appartenenza</label>
+        <input type="text" id="gruppoRuolo" name="gruppo" required autocomplete="off" list="gruppiRuoli" placeholder="es. Aula" aria-describedby="gruppoRuoloHelp nuovoRuoloErr">
+        <datalist id="gruppiRuoli">${[...new Set(ruoli.map(r => r.gruppo).filter(Boolean))].map(g => `<option value="${esc(g)}"></option>`).join('')}</datalist>
+        <p class="mut" id="gruppoRuoloHelp" style="font-size:0.85rem; margin-top:8px">Scegli un gruppo esistente o scrivine uno nuovo. Le istruzioni del gruppo valgono per tutti i ruoli che ne fanno parte.</p>
+        <button class="btn" id="btnCreaRuolo" ${!ONLINE ? 'disabled' : ''}>Crea ruolo</button>
+        <p class="bad" id="nuovoRuoloErr" role="alert"></p>
+      </form>`;
 
     if (!ONLINE) {
       html += `<div class="banner bad">Il server non è raggiungibile. I ruoli non sono modificabili offline.</div>`;
     } else if (!ruoli.length) {
-      html += `<p class="mut" style="margin-top:16px">Nessun ruolo configurato. Aggiungi i ruoli qui sotto.</p>`;
+      html += `<p class="mut" style="margin-top:16px">Nessun ruolo configurato. Crea il primo ruolo con il modulo qui sopra.</p>`;
     } else {
       html += `<ul class="lst" style="margin-top:12px" id="listaRuoli">`;
       ruoli.forEach((r, i) => {
@@ -1118,16 +1137,19 @@ async function renderRuoli(c) {
       html += `</ul>`;
     }
 
-    // Form nuovo ruolo
+    // L'editor completo resta disponibile come opzione avanzata.
     html += `
-      <form class="box" id="fNuovoRuolo" style="margin-top:24px">
-        <h3>Aggiungi / Modifica Ruoli</h3>
+      <details style="margin-top:24px">
+        <summary>Gestione avanzata dei ruoli (JSON)</summary>
+      <form class="box" id="fRuoliJson">
+        <h3>Modifica la lista dei ruoli</h3>
         <p class="mut" style="font-size:0.85rem">Modifica la lista completa dei ruoli. I badge esistenti vengono conservati se il nome non cambia.</p>
         <textarea id="ruoliJson" rows="10" style="font-family:monospace; font-size:0.82rem; width:100%; box-sizing:border-box">${esc(JSON.stringify(ruoli.map(r => ({ nome: r.nome, gruppo: r.gruppo || '' })), null, 2))}</textarea>
         <p class="mut" style="font-size:0.78rem; margin-top:4px">Formato: array di oggetti <code>{"nome":"...", "gruppo":"..."}</code>. Il campo gruppo può essere uguale al nome o vuoto.</p>
         <button class="btn" id="btnSalvaRuoli">Salva ruoli</button>
         <p class="bad" id="ruoliErr"></p>
       </form>
+      </details>
 
       <div id="qrPreview" style="display:none; text-align:center; margin-top:16px; padding:16px; background:var(--panel); border-radius:12px">
         <p id="qrLabel" class="mut" style="margin-bottom:8px"></p>
@@ -1138,8 +1160,42 @@ async function renderRuoli(c) {
 
     c.innerHTML = html;
 
-    // Salva ruoli modificati
     $('#fNuovoRuolo').onsubmit = async e => {
+      e.preventDefault();
+      if (creazioneInCorso) return;
+      const form = e.currentTarget;
+      const btn = $('#btnCreaRuolo'), err = $('#nuovoRuoloErr');
+      const nomeInput = $('#nomeRuolo'), gruppoInput = $('#gruppoRuolo');
+      const nome = nomeInput.value.trim(), gruppo = gruppoInput.value.trim();
+      err.textContent = '';
+      if (!ONLINE) { err.textContent = 'Serve il server per creare un ruolo.'; return; }
+      if (!nome || !gruppo) { err.textContent = 'Nome e gruppo sono obbligatori.'; return; }
+      creazioneInCorso = true;
+      nomeInput.disabled = gruppoInput.disabled = true;
+      attesa(btn, 'Creo...');
+      try {
+        const r = await chiedi(CFG.API + '/admin', {
+          method: 'POST', headers: authHeaders(),
+          body: JSON.stringify({ azione: 'ruoli_crea', nome, gruppo })
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.errore || 'Errore nella creazione del ruolo');
+        aggiornaLista(d.ruoli);
+        if (form.isConnected) {
+          disegna();
+          $('#nomeRuolo').focus();
+        }
+        avvisa(`Ruolo "${nome}" creato. Il badge è pronto.`);
+      } catch (x) { err.textContent = x.message; avvisa(x.message, true); }
+      finally {
+        creazioneInCorso = false;
+        nomeInput.disabled = gruppoInput.disabled = false;
+        pronto(btn);
+      }
+    };
+
+    // Salva ruoli modificati
+    $('#fRuoliJson').onsubmit = async e => {
       e.preventDefault();
       const btn = $('#btnSalvaRuoli');
       const err = $('#ruoliErr');
@@ -1162,9 +1218,7 @@ async function renderRuoli(c) {
         });
         const d = await r.json();
         if (!r.ok) throw new Error(d.errore || 'Errore salvataggio');
-        ruoli = d.ruoli || payload;
-        RuoliDB = ruoli.map(r => ({ nome: r.nome, gruppo: r.gruppo || r.nome }));
-        ricalcolaRuoli();
+        aggiornaLista(d.ruoli || payload);
         avvisa(`Salvati ${ruoli.length} ruoli`);
         err.textContent = '';
         disegna();
