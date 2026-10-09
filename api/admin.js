@@ -1,6 +1,5 @@
-const { rilasciaToken, verificaToken, confronta, segreto, troppo, nota, azzera, leggi, scrivi,
+const { rilasciaToken, verificaToken, confronta, segreto, troppo, nota, azzera, scrivi, aggiorna,
   leggiRuoli, trovaRuolo, generaCodice } = require('./_lib');
-const { invia } = require('./_push');
 
 const bearer = req => String(req.headers.authorization || '').replace(/^Bearer /, '');
 
@@ -25,24 +24,27 @@ module.exports = async (req, res) => {
   // Completamento tappa: il ruolo viene dal badge (X-Badge). L'admin può indicare un ruolo.
   if (azione === 'segna_completato') {
     const { fasciaId, completato } = req.body || {};
-    if (!fasciaId) return res.status(400).json({ errore: 'Dati mancanti.' });
+    if (typeof fasciaId !== 'string' || !fasciaId || typeof completato !== 'boolean')
+      return res.status(400).json({ errore: 'Dati mancanti o non validi.' });
     let ruolo = '';
-    if (admin && req.body.ruolo) ruolo = String(req.body.ruolo);
-    else {
-      const r = await trovaRuolo(req.headers['x-badge']);
-      if (!r) return res.status(401).json({ errore: 'Badge non valido o revocato.' });
-      ruolo = r.nome;
-    }
     try {
-      const prog = await leggi('programma', { fasce: [], attivo: false, completamenti: {} });
-      const completamenti = prog.completamenti || {};
-      const lista = completamenti[ruolo] || [];
-      if (completato) { if (!lista.includes(fasciaId)) lista.push(fasciaId); }
-      else { const i = lista.indexOf(fasciaId); if (i >= 0) lista.splice(i, 1); }
-      completamenti[ruolo] = lista;
-      await scrivi('programma', { ...prog, completamenti });
-      return res.json({ ok: true, completamenti });
-    } catch (e) { return res.status(500).json({ errore: e.message }); }
+      if (admin && req.body.ruolo) ruolo = String(req.body.ruolo);
+      else {
+        const r = await trovaRuolo(req.headers['x-badge']);
+        if (!r) return res.status(401).json({ errore: 'Badge non valido o revocato.' });
+        ruolo = r.nome;
+      }
+      const prog = await aggiorna('programma', corrente => {
+        if (!(corrente.fasce || corrente.items || []).some(f => f.id === fasciaId))
+          throw Object.assign(new Error('La tappa non esiste più nel programma.'), { status: 400 });
+        const completamenti = { ...(corrente.completamenti || {}) };
+        const lista = new Set(completamenti[ruolo] || []);
+        if (completato) lista.add(fasciaId); else lista.delete(fasciaId);
+        completamenti[ruolo] = [...lista];
+        return { ...corrente, completamenti };
+      });
+      return res.json({ ok: true, completamenti: prog.completamenti });
+    } catch (e) { return res.status(e.status || 500).json({ errore: e.message }); }
   }
 
   // Da qui in poi, solo admin.
@@ -74,20 +76,17 @@ module.exports = async (req, res) => {
       const rimossi = vecchi.map(v => v.nome).filter(n => !risultato.some(r => r.nome === n) && !rinomine[n]);
       const mappa = s => rinomine[s] ?? gruppi[s] ?? s;
 
-      const prog = await leggi('programma', { fasce: [], attivo: false, completamenti: {} });
-      prog.fasce = (prog.fasce || []).map(f => ({
-        ...f,
-        personalizzazioni: (f.personalizzazioni || []).map(p => ({ ...p, ruolo: mappa(p.ruolo) }))
-      }));
-      const completamenti = {};
-      for (const [k, v] of Object.entries(prog.completamenti || {})) completamenti[mappa(k)] = v;
-      prog.completamenti = completamenti;
-      await scrivi('programma', prog);
-
       if (Object.keys(rinomine).length || Object.keys(gruppi).length) {
-        const iscritti = (await leggi('iscrizioni', { items: [] })).items || [];
-        iscritti.forEach(s => { s.ruolo = mappa(s.ruolo); s.gruppo = mappa(s.gruppo); });
-        await scrivi('iscrizioni', { items: iscritti });
+        await aggiorna('programma', prog => {
+          const fasce = (prog.fasce || prog.items || []).map(f => ({
+            ...f,
+            personalizzazioni: (f.personalizzazioni || []).map(p => ({ ...p, ruolo: mappa(p.ruolo) }))
+          }));
+          const completamenti = Object.fromEntries(
+            Object.entries(prog.completamenti || {}).map(([k, v]) => [mappa(k), v])
+          );
+          return { ...prog, fasce, completamenti };
+        });
       }
       await scrivi('ruoli', { items: risultato });
       res.json({ ok: true, ruoli: risultato, rimossi, rinominati: Object.keys(rinomine).length });
@@ -108,21 +107,6 @@ module.exports = async (req, res) => {
     return;
   }
 
-  if (azione === 'test_push') {
-    try {
-      const lista = (await leggi('iscrizioni', { items: [] })).items || [];
-      let inviati = 0;
-      for (const sub of lista) {
-        const esito = await invia({ endpoint: sub.endpoint, keys: sub.keys }, {
-          title: 'Notifica di prova', body: 'Se la leggi, le notifiche funzionano su questo dispositivo.',
-          tag: 'prova', vibrate: [200, 100, 200]
-        });
-        if (esito === 'ok') inviati++;
-      }
-      return res.json({ ok: true, inviati, totali: lista.length });
-    } catch (e) { return res.status(500).json({ errore: e.message }); }
-  }
-
   if (azione === 'salva') {
     const { fasce, attivo } = req.body;
     if (!Array.isArray(fasce)) return res.status(400).json({ errore: 'Dati non validi.' });
@@ -131,21 +115,17 @@ module.exports = async (req, res) => {
       if (dup.length) return res.status(400).json({ errore: `Nella fase "${f.titolo}" la squadra "${dup[0]}" compare due volte.` });
     }
     try {
-      const prog = await leggi('programma', { completamenti: {} });
-      const nuovoProg = {
+      const nuovoProg = await aggiorna('programma', prog => ({
         ...prog,
         fasce,
         attivo: typeof attivo === 'boolean' ? attivo : (prog.attivo || false)
-      };
-      await scrivi('programma', nuovoProg);
+      }));
       res.json({ ok: true, fasce: fasce.length, attivo: nuovoProg.attivo });
     } catch (e) { res.status(500).json({ errore: e.message }); }
   } else if (azione === 'toggle_attivo') {
     const { attivo } = req.body;
     try {
-      const prog = await leggi('programma', { fasce: [], completamenti: {} });
-      prog.attivo = !!attivo;
-      await scrivi('programma', prog);
+      const prog = await aggiorna('programma', corrente => ({ ...corrente, attivo: !!attivo }));
       res.json({ ok: true, attivo: prog.attivo });
     } catch (e) { res.status(500).json({ errore: e.message }); }
   } else {

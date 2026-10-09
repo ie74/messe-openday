@@ -230,55 +230,6 @@ h2 {
     color: #991b1b;
 }
 
-/* Role Selection Grid */
-.roles {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: 10px;
-    margin: 18px 0 14px;
-}
-
-.role {
-    padding: 16px 14px;
-    border: 1.5px solid var(--border);
-    border-radius: var(--radius-md);
-    background: #ffffff;
-    color: var(--text-main);
-    font: inherit;
-    font-weight: 700;
-    font-size: 0.92rem;
-    text-align: left;
-    cursor: pointer;
-    box-shadow: var(--shadow-sm);
-    transition: all 0.15s;
-}
-
-.role:hover {
-    border-color: var(--border-hover);
-}
-
-.role.on {
-    border-color: var(--primary);
-    background: var(--primary-light);
-    color: var(--primary);
-    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.12);
-}
-
-.role.role-admin {
-    border-color: var(--primary);
-    background: #0f172a;
-    color: #ffd23f;
-    grid-column: 1 / -1;
-}
-
-.role small {
-    display: block;
-    margin-top: 4px;
-    font-weight: 500;
-    font-size: 0.8rem;
-    opacity: 0.8;
-}
-
 /* Forms, Labels & Inputs Abbelliti */
 form.box {
     margin-top: 14px;
@@ -428,7 +379,7 @@ input:checked + .slider:before {
     --col: 20px;
 }
 
-.it, .leg {
+.it {
     display: grid;
     grid-template-columns: var(--rail) var(--col) 1fr;
     gap: 12px;
@@ -852,26 +803,6 @@ input:checked + .slider:before {
     color: var(--primary);
 }
 
-/* Modals */
-#modal {
-    position: fixed;
-    inset: 0;
-    z-index: 50;
-    display: grid;
-    place-items: end center;
-    background: rgba(15, 23, 42, 0.5);
-    backdrop-filter: blur(4px);
-}
-
-.sheet {
-    width: 100%;
-    max-width: 520px;
-    background: #ffffff;
-    border-radius: 20px 20px 0 0;
-    padding: 24px 20px calc(24px + env(safe-area-inset-bottom));
-    box-shadow: var(--shadow-lg);
-}
-
 #toast {
     position: fixed;
     left: 50%;
@@ -910,22 +841,5 @@ input:checked + .slider:before {
     .it.alert .nd { animation: none; }
 }
 
-/* ---------- Badge e tab Ruoli ---------- */
-.ruoli-admin { display: grid; gap: 16px; }
-.ruolo-riga { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: center; margin-bottom: 8px; }
-.ruolo-riga input {
-    width: 100%; padding: 10px; border-radius: 6px;
-    border: 2px solid var(--line); background: var(--bg); color: var(--tx); font: inherit;
-}
-.ruoli-azioni { display: flex; flex-wrap: wrap; gap: 8px; }
-.ruoli-azioni .btn { width: auto; margin-top: 0; }
-.qr-griglia { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
-.qr-card {
-    display: grid; justify-items: center; gap: 4px; padding: 12px;
-    background: var(--panel); border-radius: 8px; text-align: center;
-}
-.qr-img { width: 100%; max-width: 180px; background: #fff; padding: 6px; border-radius: 6px; }
-.qr-card code { font-size: .8rem; color: var(--mut); word-break: break-all; }
-.qr-azioni { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
 .banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .banner .chip { margin-left: auto; }
