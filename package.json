@@ -1,8 +1,10 @@
 {
   "name": "messe-openday",
   "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  },
   "dependencies": {
-    "firebase-admin": "^12.7.0",
-    "web-push": "^3.6.7"
+    "firebase-admin": "^12.7.0"
   }
 }

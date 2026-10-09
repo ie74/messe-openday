@@ -2,7 +2,6 @@
 /* ---------- Configurazione ---------- */
 const CFG = {
   API: '/api',              // '' = nessun server, l'app va coi dati di esempio
-  VAPID: '',                // chiave pubblica VAPID per le push
   ADMIN: 'Admin',
   // false = salta la schermata "installa l'app" (utile per i test). Da riattivare prima dell'evento.
   CONTROLLA_INSTALLAZIONE: false,
@@ -15,7 +14,7 @@ const ONLINE = !!CFG.API;
 
 /* ---------- Utilità ---------- */
 const $ = s => document.querySelector(s);
-const screen = $('#screen'), modal = $('#modal');
+const screen = $('#screen');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const store = {
   get(k, d = null) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
@@ -56,7 +55,7 @@ function leggiCsv(testo) {
   return corpo.filter(x => x.some(y => y !== '')).map(x => Object.fromEntries(testata.map((k, i) => [k.trim().toLowerCase(), x[i] ?? ''])));
 }
 
-/* ---------- Avvisi & Tetti ---------- */
+/* ---------- Richieste & messaggi ---------- */
 async function chiedi(url, opts = {}, ms = 8000) {
   const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), ms);
   try {
@@ -98,8 +97,6 @@ const env = {
 const S = {
   role: store.get('role'),
   token: store.get('token'),
-  admin: false,
-  sig: '',
   timer: 0,
   tabAdmin: 'dashboard'
 };
@@ -112,7 +109,49 @@ addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = 
 // RuoliDB: caricato dinamicamente dal server. Fallback su CFG.GROUPS se offline.
 let RuoliDB = []; // Array di { nome, gruppo }
 
-const GROUPS = CFG.GROUPS; // solo come fallback
+const isAdmin = () => S.role === CFG.ADMIN && !!S.token;
+const gruppo = () => isAdmin() ? '' : (S.gruppo || '');
+const authHeaders = () => {
+  const headers = { 'Content-Type': 'application/json' };
+  if (isAdmin()) headers.Authorization = 'Bearer ' + S.token;
+  else if (S.badge) headers['X-Badge'] = S.badge;
+  return headers;
+};
+
+const JSQR_URL = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js';
+const QRGEN_URL = 'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js';
+const scriptCaricati = new Map();
+const loadScript = url => {
+  if (scriptCaricati.has(url)) return scriptCaricati.get(url);
+  const caricamento = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = url;
+    script.onload = resolve;
+    script.onerror = () => {
+      scriptCaricati.delete(url);
+      script.remove();
+      reject(new Error('Libreria non caricata.'));
+    };
+    document.head.appendChild(script);
+  });
+  scriptCaricati.set(url, caricamento);
+  return caricamento;
+};
+const urlBadge = codice => {
+  const url = new URL('./', location.href);
+  url.searchParams.set('b', codice);
+  return url.href;
+};
+let stopScanner = null;
+const fermaInterazioni = () => {
+  clearInterval(S.timer);
+  S.timer = 0;
+  stopScanner?.();
+};
+const svuotaCacheProgramma = () => {
+  for (const key of ['programma', 'completamenti', 'evento_attivo']) store.del(key);
+  Fasce = []; Completamenti = {}; EventoAttivo = false;
+};
 
 // Ricostruisce le strutture derivate da RuoliDB (o CFG.GROUPS come fallback)
 function ricalcolaRuoli() {
@@ -120,19 +159,11 @@ function ricalcolaRuoli() {
     g.units.length ? g.units.map(u => ({ nome: u, gruppo: g.label })) : [{ nome: g.label, gruppo: g.label }]
   );
 
-  // Ricrea GROUP_OF
-  GROUP_OF.clear();
-  fonte.forEach(r => {
-    GROUP_OF.set(r.nome, r.gruppo || r.nome);
-    if (r.gruppo) GROUP_OF.set(r.gruppo, r.gruppo);
-  });
-
   // Ricrea TUTTE_LE_SQUADRE (solo nomi individuali)
   TUTTE_LE_SQUADRE.length = 0;
   fonte.forEach(r => { if (!TUTTE_LE_SQUADRE.includes(r.nome)) TUTTE_LE_SQUADRE.push(r.nome); });
 }
 
-const GROUP_OF = new Map();
 const TUTTE_LE_SQUADRE = [];
 ricalcolaRuoli(); // inizializzazione con fallback
 
@@ -215,8 +246,16 @@ function demoFasce() {
 async function boot() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(console.warn);
   if (CFG.CONTROLLA_INSTALLAZIONE && env.mobile && !env.standalone) return showInstall();
-  if (env.mobile) await notifGate();
-
+  const codice = q.get('b');
+  if (codice) {
+    showRoles();
+    if (await entraConBadge(codice, $('#cerr'))) {
+      const url = new URL(location.href);
+      url.searchParams.delete('b');
+      history.replaceState(null, '', url);
+    }
+    return;
+  }
   if (isAdmin()) return showAdmin();
   if (S.badge && await entraConBadge(S.badge, null, true)) return showTimeline();
   showRoles();
@@ -232,59 +271,22 @@ function showInstall() {
        <li>Conferma l'installazione</li>
        <li>Apri l'app dall'<b>icona sulla Home</b></li>`;
   screen.innerHTML = `<div class="wrap center"><h1>Installa l'app</h1>
-    <p class="mut">Gli avvisi e il coordinamento in tempo reale richiedono l'app installata.</p>
+    <p class="mut">Installa l'app per accedere rapidamente al programma dalla schermata Home.</p>
     <ol style="text-align:left; margin: 20px auto; max-width: 340px; line-height: 1.6">${steps}</ol>
     ${env.ios ? '' : `<button class="btn" id="inst" ${installEvt ? '' : 'hidden'}>Installa app</button>`}</div>`;
   $('#inst')?.addEventListener('click', async () => { installEvt.prompt(); await installEvt.userChoice; });
 }
 
-const openModal = html => { modal.innerHTML = `<div class="sheet">${html}</div>`; modal.hidden = false; };
-const closeModal = () => { modal.hidden = true; modal.innerHTML = ''; };
-
-function notifGate() {
-  return new Promise(resolve => {
-    const draw = () => {
-      const st = 'Notification' in window ? Notification.permission : 'unsupported';
-      if (st === 'granted') { closeModal(); subscribePush(); return resolve(); }
-      if (st === 'default') {
-        openModal(`<h2>Attiva le notifiche</h2>
-          <p class="mut" style="margin-top:6px">Avvisi e cambi di programma arrivano solo così. Non mettere il telefono in silenzioso.</p>
-          <button class="btn" id="ask">Attiva notifiche</button>`);
-      } else {
-        openModal(`<h2 class="bad">Notifiche disattivate</h2>
-          <p class="mut" style="margin-top:6px">Puoi comunque usare l'app, ma ti consigliamo di abilitare le notifiche.</p>
-          <button class="btn ghost" id="go">Continua senza notifiche</button>`);
-      }
-      $('#ask')?.addEventListener('click', () => Notification.requestPermission().then(draw));
-      $('#go')?.addEventListener('click', () => { closeModal(); resolve(); });
-    };
-    draw();
-  });
-}
-
-const b64u8 = s => Uint8Array.from(atob((s + '='.repeat((4 - s.length % 4) % 4)).replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
-async function subscribePush() {
-  if (!ONLINE || !CFG.VAPID || !('PushManager' in window)) return;
-  try {
-    const reg = await navigator.serviceWorker.ready;
-    const sub = (await reg.pushManager.getSubscription()) ||
-      await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u8(CFG.VAPID) });
-    await chiedi(CFG.API + '/subscribe', {
-      method: 'POST', headers: authHeaders(),
-      body: JSON.stringify({ subscription: sub, ruolo: S.role, gruppo: gruppo(), admin: isAdmin() })
-    }, 15000);
-  } catch (e) { console.warn('push', e); }
-}
-
 /* ---------- Schermata 3: Scelta Ruolo ---------- */
 function showRoles() {
+  fermaInterazioni();
   inCorso = false;
   screen.innerHTML = `<div class="wrap"><h1>Benvenuto</h1>
     <p class="mut">Usa il badge della tua squadra per vedere tappe e istruzioni.</p>
     <button class="btn" id="scan">Scansiona il badge</button>
     <form class="box" id="codf">
       <label for="cod">Oppure scrivi il codice stampato sul badge</label>
-      <input id="cod" autocomplete="off" autocapitalize="characters" placeholder="xxxx-xxxx-xxxx-xxxx">
+      <input type="text" id="cod" autocomplete="off" autocapitalize="characters" placeholder="xxxx-xxxx-xxxx-xxxx">
       <button class="btn ghost">Entra</button>
       <p class="bad" id="cerr"></p>
     </form>
@@ -299,6 +301,7 @@ function showRoles() {
 function revocaBadge() {
   S.badge = null; S.role = null; S.gruppo = '';
   store.del('badge'); store.del('role'); store.del('gruppo');
+  svuotaCacheProgramma();
   avvisa('Badge non più valido: usa il tuo badge.', true);
   showRoles();
 }
@@ -315,13 +318,19 @@ async function entraConBadge(codice, errEl, silenzioso = false) {
     });
     const d = await r.json();
     if (!r.ok) {
-      if (silenzioso) { store.del('badge'); S.badge = null; return false; }
+      if (silenzioso) {
+        S.badge = null; S.role = null; S.gruppo = '';
+        store.del('badge'); store.del('role'); store.del('gruppo');
+        svuotaCacheProgramma();
+        return false;
+      }
       errore(d.errore || 'Badge non valido.');
       return false;
     }
+    if (S.badge !== c || S.role !== d.ruolo || S.token) svuotaCacheProgramma();
+    S.token = null; store.del('token');
     S.badge = c; S.role = d.ruolo; S.gruppo = d.gruppo || '';
     store.set('badge', c); store.set('role', S.role); store.set('gruppo', S.gruppo);
-    subscribePush();
     if (!silenzioso) showTimeline();
     return true;
   } catch (e) {
@@ -338,6 +347,7 @@ const estraiCodice = testo => {
 };
 
 async function avviaScanner() {
+  stopScanner?.();
   const box = $('#scanbox');
   if (!navigator.mediaDevices?.getUserMedia) {
     box.innerHTML = '<p class="mut">La fotocamera non è disponibile qui: usa il codice qui sopra.</p>';
@@ -356,13 +366,17 @@ async function avviaScanner() {
     <button class="btn ghost" id="stopScan">Chiudi fotocamera</button>`;
   const video = $('#vid');
   video.srcObject = stream;
-  await video.play();
-
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   let attivo = true;
-  const stop = () => { attivo = false; stream.getTracks().forEach(t => t.stop()); box.innerHTML = ''; };
+  const stop = () => {
+    attivo = false; stream.getTracks().forEach(t => t.stop()); box.innerHTML = '';
+    if (stopScanner === stop) stopScanner = null;
+  };
+  stopScanner = stop;
   $('#stopScan').onclick = stop;
+  try { await video.play(); }
+  catch { stop(); avvisa('Fotocamera non avviata: usa il codice del badge.', true); return; }
 
   const passo = async () => {
     if (!attivo) return;
@@ -401,6 +415,7 @@ function adminForm() {
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d.errore || 'Password errata.');
+      svuotaCacheProgramma();
       S.token = d.token; store.set('token', S.token);
       S.badge = null; store.del('badge');
       S.role = CFG.ADMIN; store.set('role', CFG.ADMIN);
@@ -423,7 +438,15 @@ async function carica() {
       cache: 'no-store',
       headers: authHeaders()
     });
-    if (r.status === 401 && !S.token) { revocaBadge(); return { revocato: true }; }
+    if (r.status === 401) {
+      if (isAdmin()) {
+        S.token = null; S.role = null; S.gruppo = '';
+        store.del('token'); store.del('role'); store.del('gruppo');
+        svuotaCacheProgramma();
+        showRoles(); avvisa('Sessione admin scaduta: accedi di nuovo.', true);
+      } else revocaBadge();
+      return { revocato: true };
+    }
     if (!r.ok) throw new Error('Il server ha risposto ' + r.status + '.');
     const d = await r.json();
     store.set('programma', d);
@@ -431,7 +454,6 @@ async function carica() {
     EventoAttivo = !!d.attivo;
     Completamenti = d.completamenti || {};
     store.set('completamenti', Completamenti);
-    S.admin = !!d.admin;
     return {};
   } catch (x) {
     const c = store.get('programma');
@@ -441,32 +463,43 @@ async function carica() {
       Completamenti = store.get('completamenti', {});
       return { offline: true, errore: x.message };
     }
-    Fasce = demoFasce();
-    EventoAttivo = store.get('evento_attivo', true);
-    Completamenti = store.get('completamenti', {});
-    return { demo: true, errore: x.message };
+    Fasce = []; EventoAttivo = false; Completamenti = {};
+    return { offline: true, senzaCache: true, errore: x.message };
   }
 }
 
 /* ---------- Checklist Completamento ---------- */
+let salvataggioTappa = false;
 async function toggleCompletato(fasciaId) {
   const r = S.role;
-  if (!r) return;
+  if (!r || salvataggioTappa) return;
   const list = Completamenti[r] || [];
   const fatto = list.includes(fasciaId);
   const nuovaLista = fatto ? list.filter(id => id !== fasciaId) : [...list, fasciaId];
   Completamenti[r] = nuovaLista;
-  store.set('completamenti', Completamenti);
+  salvataggioTappa = true;
   renderList(false);
-  avvisa(fatto ? 'Tappa segnata come non completata' : 'Tappa completata!');
-
-  if (ONLINE) {
-    try {
-      await chiedi(CFG.API + '/admin', {
+  try {
+    if (ONLINE) {
+      const risposta = await chiedi(CFG.API + '/admin', {
         method: 'POST', headers: authHeaders(),
         body: JSON.stringify({ azione: 'segna_completato', ruolo: r, fasciaId, completato: !fatto })
       });
-    } catch (e) { console.warn('Errore salvataggio completamento', e); }
+      const dati = await risposta.json();
+      if (!risposta.ok || !dati.ok) throw new Error(dati.errore || 'Salvataggio della tappa fallito.');
+      if (S.role !== r) return;
+      Completamenti = dati.completamenti || Completamenti;
+    }
+    store.set('completamenti', Completamenti);
+    const programma = store.get('programma');
+    if (programma) store.set('programma', { ...programma, completamenti: Completamenti });
+    avvisa(fatto ? 'Tappa segnata come non completata' : 'Tappa completata!');
+  } catch (e) {
+    if (S.role === r) Completamenti[r] = list;
+    avvisa('Tappa non salvata: ' + e.message, true);
+  } finally {
+    salvataggioTappa = false;
+    if ($('#tl')) renderList(false);
   }
 }
 
@@ -537,7 +570,7 @@ function renderList(scroll) {
         ${noteTeam ? `<p class="mut">Nota: ${esc(noteTeam)}</p>` : ''}
 
         <div class="chk-box">
-          <button class="chk-btn ${isFatto ? 'done' : ''}" onclick="toggleCompletato('${f.id}')">
+          <button class="chk-btn ${isFatto ? 'done' : ''}" data-fascia="${esc(f.id)}" ${salvataggioTappa ? 'disabled' : ''}>
             ${isFatto ? '[X] Tappa completata' : '[ ] Segna come completata'}
           </button>
         </div>
@@ -552,6 +585,10 @@ function renderList(scroll) {
   if (!scroll && html === ultimoHtml) return;
   ultimoHtml = html;
   $('#tl').innerHTML = html;
+  $('#tl').onclick = e => {
+    const button = e.target.closest('[data-fascia]');
+    if (button && !button.disabled) toggleCompletato(button.dataset.fascia);
+  };
   if (scroll) $('.it.now, .it.next')?.scrollIntoView({ block: 'center' });
 }
 
@@ -564,6 +601,7 @@ const batto = () => {
 
 /* ---------- Schermata 4: Timeline Utente ---------- */
 async function showTimeline() {
+  fermaInterazioni();
   inCorso = true;
   screen.innerHTML = `<header class="top"><b id="clock"></b><button class="chip" id="chg">${esc(S.role || 'Ruolo')}, cambia</button></header>
     <div class="wrap">
@@ -588,7 +626,7 @@ async function showTimeline() {
   }
 
   if (d.offline) {
-    bHtml += `<div class="banner bad">${esc(d.errore)} Stiamo vedendo l'ultimo programma salvato.<button class="btn mini" id="retry">Riprova</button></div>`;
+    bHtml += `<div class="banner bad">${esc(d.errore)} ${d.senzaCache ? 'Nessun programma disponibile offline.' : 'Stiamo vedendo l\'ultimo programma salvato.'}<button class="btn mini" id="retry">Riprova</button></div>`;
   } else if (d.demo) {
     bHtml += '<div class="banner">Dati in modalità offline/demo.</div>';
   }
@@ -605,22 +643,25 @@ async function showAdmin() {
     return showRoles();
   }
 
+  fermaInterazioni();
   inCorso = true;
-  await Promise.all([carica(), loadRuoliDB()]);
+  const dati = await carica();
+  if (dati.revocato) return;
+  await loadRuoliDB();
   inCorso = false;
 
 
   screen.innerHTML = `<header class="top">
       <b>Pannello Admin</b>
-      <button class="chip" id="admTest">Test notifiche</button>
       <button class="chip" id="admLogout">Esci da Admin</button>
     </header>
     <div class="wrap">
+      ${dati.offline ? `<div class="banner bad">${esc(dati.errore)} I dati potrebbero non essere aggiornati.</div>` : ''}
       <!-- Toggle Attivazione Generale -->
       <div class="toggle-card ${EventoAttivo ? 'active' : ''}">
         <div class="toggle-info">
           <h3>${EventoAttivo ? 'EVENTO ATTIVO' : 'EVENTO IN PAUSA / IN ATTESA'}</h3>
-          <p>${EventoAttivo ? 'Lo staff riceve il flusso live e l\'avvio delle fasi.' : 'Tutto caricato in memoria. Attiva il toggle prima dell\'avvio.'}</p>
+          <p>${EventoAttivo ? 'Le tappe e gli indicatori di ritardo sono attivi.' : 'Attiva l\'evento quando il programma deve iniziare.'}</p>
         </div>
         <label class="switch">
           <input type="checkbox" id="toggleEvt" ${EventoAttivo ? 'checked' : ''}>
@@ -639,47 +680,45 @@ async function showAdmin() {
       <div id="tabContent"></div>
     </div>`;
 
-  $('#admTest').onclick = async e => {
-    if (!ONLINE) return avvisa('Serve il server per il test notifiche', true);
-    const b = e.currentTarget;
-    attesa(b, 'Invio in corso...');
-    try {
-      const r = await chiedi(CFG.API + '/admin', {
-        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + S.token },
-        body: JSON.stringify({ azione: 'test_push' })
-      }, 15000);
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.errore || 'Errore sconosciuto');
-      avvisa(`Notifica inviata a ${d.inviati} dispositivi su ${d.totali}`);
-    } catch (x) { avvisa(x.message, true); }
-    finally { pronto(b); }
-  };
-
   $('#admLogout').onclick = () => {
     S.token = null; store.del('token');
-    S.role = null; store.del('role');
+    S.role = null; S.badge = null; S.gruppo = '';
+    store.del('role'); store.del('badge'); store.del('gruppo');
+    RuoliDB = []; ricalcolaRuoli(); svuotaCacheProgramma();
     avvisa('Logout eseguito');
     showRoles();
   };
 
   $('#toggleEvt').onchange = async e => {
     const val = e.target.checked;
+    const precedente = EventoAttivo;
+    e.target.disabled = true;
     EventoAttivo = val;
     store.set('evento_attivo', val);
-    avvisa(val ? 'Evento ATTIVATO per tutto lo staff' : 'Evento messo in PAUSA');
     
     $('.toggle-card').className = `toggle-card ${val ? 'active' : ''}`;
     $('.toggle-info h3').textContent = val ? 'EVENTO ATTIVO' : 'EVENTO IN PAUSA / IN ATTESA';
-    $('.toggle-info p').textContent = val ? 'Lo staff riceve il flusso live e l\'avvio delle fasi.' : 'Tutto caricato in memoria. Attiva il toggle prima dell\'avvio.';
+    $('.toggle-info p').textContent = val ? 'Le tappe e gli indicatori di ritardo sono attivi.' : 'Attiva l\'evento quando il programma deve iniziare.';
 
     if (ONLINE) {
       try {
-        await chiedi(CFG.API + '/admin', {
+        const risposta = await chiedi(CFG.API + '/admin', {
           method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + S.token },
           body: JSON.stringify({ azione: 'toggle_attivo', attivo: val })
         });
-      } catch (err) { avvisa('Errore sincronizzazione toggle: ' + err.message, true); }
+        const dati = await risposta.json();
+        if (!risposta.ok || !dati.ok) throw new Error(dati.errore || 'Salvataggio fallito.');
+        avvisa(val ? 'Evento ATTIVATO per tutto lo staff' : 'Evento messo in PAUSA');
+      } catch (err) {
+        EventoAttivo = precedente; store.set('evento_attivo', precedente);
+        e.target.checked = precedente;
+        $('.toggle-card').className = `toggle-card ${precedente ? 'active' : ''}`;
+        $('.toggle-info h3').textContent = precedente ? 'EVENTO ATTIVO' : 'EVENTO IN PAUSA / IN ATTESA';
+        $('.toggle-info p').textContent = precedente ? 'Le tappe e gli indicatori di ritardo sono attivi.' : 'Attiva l\'evento quando il programma deve iniziare.';
+        avvisa('Stato evento non salvato: ' + err.message, true);
+      }
     }
+    e.target.disabled = false;
   };
 
   const renderTab = () => {
@@ -1049,15 +1088,34 @@ async function renderRuoli(c) {
     }
   }
 
+  const aggiornaLista = lista => {
+    ruoli = lista;
+    RuoliDB = ruoli.map(r => ({ nome: r.nome, gruppo: r.gruppo || r.nome }));
+    ricalcolaRuoli();
+  };
+  aggiornaLista(ruoli);
+  let creazioneInCorso = false;
+
   const disegna = () => {
     let html = `
       <h2 style="margin-top:16px">Ruoli e Badge</h2>
-      <p class="mut">Ogni squadra accede tramite il suo codice badge univoco. Clicca "QR" per generare e stampare il QR di accesso, oppure "Rigenera" per invalidare il vecchio codice.</p>`;
+      <p class="mut">Ogni squadra accede tramite il suo codice badge univoco. Clicca "QR" per generare e stampare il QR di accesso, oppure "Rigenera" per invalidare il vecchio codice.</p>
+      <form class="box" id="fNuovoRuolo">
+        <h3>Crea un ruolo</h3>
+        <label for="nomeRuolo">Nome del ruolo</label>
+        <input type="text" id="nomeRuolo" name="nome" required autocomplete="off" placeholder="es. Aula 9" aria-describedby="nuovoRuoloErr">
+        <label for="gruppoRuolo">Gruppo di appartenenza</label>
+        <input type="text" id="gruppoRuolo" name="gruppo" required autocomplete="off" list="gruppiRuoli" placeholder="es. Aula" aria-describedby="gruppoRuoloHelp nuovoRuoloErr">
+        <datalist id="gruppiRuoli">${[...new Set(ruoli.map(r => r.gruppo).filter(Boolean))].map(g => `<option value="${esc(g)}"></option>`).join('')}</datalist>
+        <p class="mut" id="gruppoRuoloHelp" style="font-size:0.85rem; margin-top:8px">Scegli un gruppo esistente o scrivine uno nuovo. Le istruzioni del gruppo valgono per tutti i ruoli che ne fanno parte.</p>
+        <button class="btn" id="btnCreaRuolo" ${!ONLINE ? 'disabled' : ''}>Crea ruolo</button>
+        <p class="bad" id="nuovoRuoloErr" role="alert"></p>
+      </form>`;
 
     if (!ONLINE) {
       html += `<div class="banner bad">Il server non è raggiungibile. I ruoli non sono modificabili offline.</div>`;
     } else if (!ruoli.length) {
-      html += `<p class="mut" style="margin-top:16px">Nessun ruolo configurato. Aggiungi i ruoli qui sotto.</p>`;
+      html += `<p class="mut" style="margin-top:16px">Nessun ruolo configurato. Crea il primo ruolo con il modulo qui sopra.</p>`;
     } else {
       html += `<ul class="lst" style="margin-top:12px" id="listaRuoli">`;
       ruoli.forEach((r, i) => {
@@ -1067,7 +1125,7 @@ async function renderRuoli(c) {
             <div style="flex:1; min-width:0">
               <b>${esc(r.nome)}</b>
               ${r.gruppo && r.gruppo !== r.nome ? `<small class="mut"> — gruppo: ${esc(r.gruppo)}</small>` : ''}
-              <br><code style="font-size:0.78rem; color:var(--muted); word-break:break-all">${esc(r.badge)}</code>
+              <br><code style="font-size:0.78rem; color:var(--text-muted); word-break:break-all">${esc(r.badge)}</code>
             </div>
             <div class="btnx" style="gap:6px; flex-wrap:wrap">
               <button class="btn ghost" style="font-size:0.8rem; padding:4px 10px" data-qr="${esc(r.badge)}" data-link="${esc(link)}">QR</button>
@@ -1079,18 +1137,21 @@ async function renderRuoli(c) {
       html += `</ul>`;
     }
 
-    // Form nuovo ruolo
+    // L'editor completo resta disponibile come opzione avanzata.
     html += `
-      <form class="box" id="fNuovoRuolo" style="margin-top:24px">
-        <h3>Aggiungi / Modifica Ruoli</h3>
+      <details style="margin-top:24px">
+        <summary>Gestione avanzata dei ruoli (JSON)</summary>
+      <form class="box" id="fRuoliJson">
+        <h3>Modifica la lista dei ruoli</h3>
         <p class="mut" style="font-size:0.85rem">Modifica la lista completa dei ruoli. I badge esistenti vengono conservati se il nome non cambia.</p>
         <textarea id="ruoliJson" rows="10" style="font-family:monospace; font-size:0.82rem; width:100%; box-sizing:border-box">${esc(JSON.stringify(ruoli.map(r => ({ nome: r.nome, gruppo: r.gruppo || '' })), null, 2))}</textarea>
         <p class="mut" style="font-size:0.78rem; margin-top:4px">Formato: array di oggetti <code>{"nome":"...", "gruppo":"..."}</code>. Il campo gruppo può essere uguale al nome o vuoto.</p>
         <button class="btn" id="btnSalvaRuoli">Salva ruoli</button>
         <p class="bad" id="ruoliErr"></p>
       </form>
+      </details>
 
-      <div id="qrPreview" style="display:none; text-align:center; margin-top:16px; padding:16px; background:var(--surface); border-radius:12px">
+      <div id="qrPreview" style="display:none; text-align:center; margin-top:16px; padding:16px; background:var(--panel); border-radius:12px">
         <p id="qrLabel" class="mut" style="margin-bottom:8px"></p>
         <div id="qrCanvas"></div>
         <a id="qrLink" class="btn ghost" style="display:inline-block; margin-top:10px; font-size:0.85rem" target="_blank">Apri link badge</a>
@@ -1099,8 +1160,42 @@ async function renderRuoli(c) {
 
     c.innerHTML = html;
 
-    // Salva ruoli modificati
     $('#fNuovoRuolo').onsubmit = async e => {
+      e.preventDefault();
+      if (creazioneInCorso) return;
+      const form = e.currentTarget;
+      const btn = $('#btnCreaRuolo'), err = $('#nuovoRuoloErr');
+      const nomeInput = $('#nomeRuolo'), gruppoInput = $('#gruppoRuolo');
+      const nome = nomeInput.value.trim(), gruppo = gruppoInput.value.trim();
+      err.textContent = '';
+      if (!ONLINE) { err.textContent = 'Serve il server per creare un ruolo.'; return; }
+      if (!nome || !gruppo) { err.textContent = 'Nome e gruppo sono obbligatori.'; return; }
+      creazioneInCorso = true;
+      nomeInput.disabled = gruppoInput.disabled = true;
+      attesa(btn, 'Creo...');
+      try {
+        const r = await chiedi(CFG.API + '/admin', {
+          method: 'POST', headers: authHeaders(),
+          body: JSON.stringify({ azione: 'ruoli_crea', nome, gruppo })
+        });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.errore || 'Errore nella creazione del ruolo');
+        aggiornaLista(d.ruoli);
+        if (form.isConnected) {
+          disegna();
+          $('#nomeRuolo').focus();
+        }
+        avvisa(`Ruolo "${nome}" creato. Il badge è pronto.`);
+      } catch (x) { err.textContent = x.message; avvisa(x.message, true); }
+      finally {
+        creazioneInCorso = false;
+        nomeInput.disabled = gruppoInput.disabled = false;
+        pronto(btn);
+      }
+    };
+
+    // Salva ruoli modificati
+    $('#fRuoliJson').onsubmit = async e => {
       e.preventDefault();
       const btn = $('#btnSalvaRuoli');
       const err = $('#ruoliErr');
@@ -1123,7 +1218,7 @@ async function renderRuoli(c) {
         });
         const d = await r.json();
         if (!r.ok) throw new Error(d.errore || 'Errore salvataggio');
-        ruoli = d.ruoli || payload;
+        aggiornaLista(d.ruoli || payload);
         avvisa(`Salvati ${ruoli.length} ruoli`);
         err.textContent = '';
         disegna();

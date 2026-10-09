@@ -18,10 +18,14 @@ const rilasciaToken = (ttl = 12 * 3600e3) => {
 
 function verificaToken(t) {
   if (!t || typeof t !== 'string' || !t.includes('.')) return false;
-  const [p, s] = t.split('.');
-  const atteso = Buffer.from(firma(p)), dato = Buffer.from(s);
-  if (atteso.length !== dato.length || !timingSafeEqual(atteso, dato)) return false;
-  try { return Date.now() < JSON.parse(Buffer.from(p, 'base64url')).exp; } catch { return false; }
+  try {
+    const parti = t.split('.');
+    if (parti.length !== 2) return false;
+    const [p, s] = parti;
+    const atteso = Buffer.from(firma(p)), dato = Buffer.from(s);
+    if (atteso.length !== dato.length || !timingSafeEqual(atteso, dato)) return false;
+    return Date.now() < JSON.parse(Buffer.from(p, 'base64url')).exp;
+  } catch { return false; }
 }
 
 const confronta = (a, b) => {
@@ -63,6 +67,18 @@ const leggi = async (id, vuoto = null) => {
 const scrivi = (id, data) => fs().collection('config').doc(id)
   .set({ ...data, aggiornato: new Date().toISOString() });
 
+// Un aggiornamento atomico conserva le modifiche delle altre squadre e admin.
+const aggiorna = async (id, modifica, vuoto = {}) => {
+  const db = fs(), ref = db.collection('config').doc(id);
+  return db.runTransaction(async tx => {
+    const snapshot = await tx.get(ref);
+    const dati = modifica(snapshot.exists ? snapshot.data() : structuredClone(vuoto));
+    const risultato = { ...dati, aggiornato: new Date().toISOString() };
+    tx.set(ref, risultato);
+    return risultato;
+  });
+};
+
 /* Ruoli e badge. Ogni ruolo ha un codice (badge) che il telefono presenta: il
    server risolve il ruolo da lì, e il telefono non può dichiararne uno proprio. */
 const normalizzaCodice = c => String(c || '').toLowerCase().replace(/[^0-9a-f]/g, '');
@@ -74,5 +90,5 @@ const trovaRuolo = async codice => {
     return (await leggiRuoli()).find(r => normalizzaCodice(r.badge) === c) || null;
 };
 
-module.exports = { rilasciaToken, verificaToken, confronta, segreto, troppo, nota, azzera, leggi, scrivi,
+module.exports = { rilasciaToken, verificaToken, confronta, segreto, troppo, nota, azzera, leggi, scrivi, aggiorna,
     normalizzaCodice, generaCodice, leggiRuoli, trovaRuolo };

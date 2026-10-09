@@ -1,40 +1,44 @@
-const V = 'evento-v1';
-const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest', 'icon-192.png'];
+const CACHE = 'openday-v2';
+const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest',
+  'favicon.png', 'icon-192.png', 'icon-512.png'];
 
-self.addEventListener('install', e => {
-  e.waitUntil(caches.open(V).then(c => c.addAll(SHELL)));
+self.addEventListener('install', event => {
+  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)));
   self.skipWaiting();
 });
 
-self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys()
-    .then(ks => Promise.all(ks.filter(k => k !== V).map(k => caches.delete(k))))
-    .then(() => clients.claim()));
+self.addEventListener('activate', event => {
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys
+      .filter(key => key !== CACHE && /^(evento-|openday-)/.test(key))
+      .map(key => caches.delete(key)));
+    // Disiscrive i dispositivi che usavano la versione precedente dell'app.
+    try {
+      const subscription = await self.registration.pushManager?.getSubscription();
+      if (subscription) await subscription.unsubscribe();
+    } catch (error) { console.warn('Rimozione iscrizione precedente:', error); }
+    await self.clients.claim();
+  })());
 });
 
-// Rete prima (così gli aggiornamenti arrivano), cache come riserva offline.
-// Le chiamate /api/ le gestisce app.js con il proprio salvataggio locale.
-self.addEventListener('fetch', e => {
-  const u = new URL(e.request.url);
-  if (e.request.method !== 'GET' || u.origin !== location.origin || u.pathname.includes('/api/')) return;
-  e.respondWith(
-    fetch(e.request)
-      .then(r => { const cp = r.clone(); caches.open(V).then(c => c.put(e.request, cp)); return r; })
-      .catch(() => caches.match(e.request).then(m => m || caches.match('index.html')))
-  );
-});
-
-// Ogni push DEVE mostrare una notifica, altrimenti iOS può revocare l'iscrizione.
-self.addEventListener('push', e => {
-  let d = {};
-  try { d = e.data.json(); } catch { d = { body: e.data ? e.data.text() : '' }; }
-  e.waitUntil(self.registration.showNotification(d.title || 'Avviso', {
-    body: d.body || '', icon: 'icon-192.png', badge: 'icon-192.png', tag: d.tag, renotify: !!d.renotify, requireInteraction: !!d.urgente, vibrate: d.vibrate || [200, 100, 200], data: { url: d.url || './' }
-  }));
-});
-
-self.addEventListener('notificationclick', e => {
-  e.notification.close();
-  e.waitUntil(clients.matchAll({ type: 'window', includeUncontrolled: true }).then(l =>
-    l.length ? l[0].focus() : clients.openWindow(e.notification.data.url)));
+// Rete prima, cache come riserva. Le API e i dati personali non vengono cachati qui.
+self.addEventListener('fetch', event => {
+  const url = new URL(event.request.url);
+  if (event.request.method !== 'GET' || url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
+  event.respondWith((async () => {
+    try {
+      const response = await fetch(event.request);
+      if (response.ok) {
+        const cache = await caches.open(CACHE);
+        await cache.put(event.request, response.clone());
+      }
+      return response;
+    } catch {
+      const cached = await caches.match(event.request);
+      if (cached) return cached;
+      if (event.request.mode === 'navigate') return (await caches.match('index.html')) || Response.error();
+      return Response.error();
+    }
+  })());
 });
