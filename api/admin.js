@@ -39,6 +39,8 @@ module.exports = async (req, res) => {
         ruolo = r.nome; gruppo = r.gruppo || '';
       }
       const prog = await aggiorna('programma', corrente => {
+        if (!admin && corrente.attivo !== true)
+          throw Object.assign(new Error('Evento in pausa: attendi l’avvio prima di completare una tappa.'), { status: 409 });
         const fase = (corrente.fasce || corrente.items || []).find(f => f.id === fasciaId);
         if (!fase)
           throw Object.assign(new Error('La tappa non esiste più nel programma.'), { status: 400 });

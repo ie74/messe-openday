@@ -1,4 +1,4 @@
-const CACHE = 'openday-v5';
+const CACHE = 'openday-v6';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest',
   'favicon.png', 'icon-192.png', 'icon-512.png'];
 

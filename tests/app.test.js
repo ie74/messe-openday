@@ -86,16 +86,22 @@ test('PDF badge include tutti i ruoli, i codici e una seconda pagina dopo otto r
 
 test('un errore HTTP ripristina la tappa senza annunciare un successo o salvarlo offline', async () => {
   const f = frontend({ ok: false, json: async () => ({ errore: 'Errore server' }) }, { completamenti: { C1: [] } });
+  f.run('EventoAttivo = true; inCorso = false; renderStatoTimeline({}, true)');
+  assert.match(f.element('#tl').innerHTML, /Accoglienza/);
   await f.run("toggleCompletato('f1')");
   assert.equal(f.run('Completamenti.C1.length'), 0);
   assert.deepEqual(JSON.parse(f.storage.get('completamenti')), { C1: [] });
-  assert.match(f.element('#toast').textContent, /Tappa non salvata: Errore server/);
+  assert.match(f.element('#banner').innerHTML, /Tappa non salvata: Errore server/);
+  assert.match(f.element('#banner').innerHTML, /banner warn/);
+  assert.equal(f.element('#tl').hidden, true);
+  assert.equal(f.element('#tl').innerHTML, '');
   assert.equal(f.run('salvataggioTappa'), false);
 });
 
 test('il successo del server aggiorna anche la copia locale del programma', async () => {
   const f = frontend({ ok: true, json: async () => ({ ok: true, completamenti: { C1: ['f1'] } }) },
     { programma: { fasce: [{ id: 'f1' }], completamenti: {} } });
+  f.run('EventoAttivo = true');
   await f.run("toggleCompletato('f1')");
   assert.deepEqual(JSON.parse(f.storage.get('programma')).completamenti, { C1: ['f1'] });
   assert.equal(f.element('#toast').textContent, 'Tappa completata!');
@@ -133,7 +139,7 @@ test('ruolo senza attività vede la fase senza pulsante e non invia completament
   let richieste = 0;
   const f = frontend(async () => { richieste++; return { ok: true, json: async () => ({ ok: true }) }; });
   f.run(`Fasce = [{ id: 'f1', titolo: 'Accoglienza', inizio: '2026-10-10T10:00:00Z',
-    mia: { ruolo: 'C1', nessunaAttivita: true } }]; inCorso = false; renderList(true)`);
+    mia: { ruolo: 'C1', nessunaAttivita: true } }]; EventoAttivo = true; inCorso = false; renderList(true)`);
   assert.match(f.element('#tl').innerHTML, /Accoglienza/);
   assert.match(f.element('#tl').innerHTML, /Nessuna attività/);
   assert.doesNotMatch(f.element('#tl').innerHTML, /data-fascia="f1"/);
@@ -166,6 +172,57 @@ test('staff aggiorna programma e completamenti dal server ogni 2 minuti', async 
   assert.match(f.element('#tl').innerHTML, /Segna come completata/);
   await timer.callback();
   assert.match(f.element('#tl').innerHTML, /Tappa completata/);
+});
+
+test('staff vede solo l’avviso in pausa e riceve le fasi quando il server attiva l’evento', async () => {
+  let attivo = false;
+  const f = frontend(async () => ({ ok: true, json: async () => ({
+    attivo, completamenti: {},
+    fasce: [{ id: 'f1', titolo: 'Accoglienza', inizio: '2026-10-10T10:00:00Z' }]
+  }) }));
+  await f.run('showTimeline()');
+  const timer = [...f.intervals.values()].find(i => i.ms === 120000);
+  assert.match(f.element('#banner').innerHTML, /EVENTO IN PAUSA/);
+  assert.equal(f.element('#tl').hidden, true);
+  assert.equal(f.element('#tl').innerHTML, '');
+  attivo = true;
+  await timer.callback();
+  assert.equal(f.element('#tl').hidden, false);
+  assert.match(f.element('#tl').innerHTML, /Accoglienza/);
+  attivo = false;
+  await timer.callback();
+  assert.equal(f.element('#tl').hidden, true);
+  assert.equal(f.element('#tl').innerHTML, '');
+});
+
+test('staff non mostra fasi salvate quando la rete cade e le ripristina alla riconnessione', async () => {
+  let rete = true;
+  const f = frontend(async () => {
+    if (!rete) throw new Error('offline');
+    return { ok: true, json: async () => ({ attivo: true, completamenti: {},
+      fasce: [{ id: 'f1', titolo: 'Accoglienza', inizio: '2026-10-10T10:00:00Z' }] }) };
+  });
+  await f.run('showTimeline()');
+  const timer = [...f.intervals.values()].find(i => i.ms === 120000);
+  assert.match(f.element('#tl').innerHTML, /Accoglienza/);
+  rete = false;
+  await timer.callback();
+  assert.match(f.element('#banner').innerHTML, /STATO EVENTO NON DISPONIBILE/);
+  assert.match(f.element('#banner').innerHTML, /banner warn/);
+  assert.equal(f.element('#tl').hidden, true);
+  assert.equal(f.element('#tl').innerHTML, '');
+  rete = true;
+  await timer.callback();
+  assert.equal(f.element('#tl').hidden, false);
+  assert.match(f.element('#tl').innerHTML, /Accoglienza/);
+});
+
+test('staff non mostra un programma malformato restituito dal server', async () => {
+  const f = frontend({ ok: true, json: async () => ({ attivo: true, fasce: 'errore', completamenti: {} }) });
+  await f.run('showTimeline()');
+  assert.match(f.element('#banner').innerHTML, /banner warn/);
+  assert.equal(f.element('#tl').hidden, true);
+  assert.equal(f.element('#tl').innerHTML, '');
 });
 
 test('admin aggiorna i completamenti ogni 30 secondi mantenendo una bozza di programma', async () => {
