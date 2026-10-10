@@ -1,9 +1,5 @@
 const { leggi, verificaToken, trovaRuolo } = require('./_lib');
-
-function miaDi(f, ruolo, gruppo) {
-  const ps = f.personalizzazioni || [];
-  return ps.find(p => p.ruolo === ruolo) || ps.find(p => p.ruolo === gruppo) || null;
-}
+const { miaDi } = require('./_fasi');
 
 module.exports = async (req, res) => {
   if (req.method !== 'GET') return res.status(405).json({ errore: 'Metodo non consentito' });

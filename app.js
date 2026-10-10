@@ -98,6 +98,11 @@ const S = {
   role: store.get('role'),
   token: store.get('token'),
   timer: 0,
+  refreshTimer: 0,
+  refreshInCorso: false,
+  operazioneAdmin: false,
+  mutationVersion: 0,
+  vista: 0,
   tabAdmin: 'dashboard'
 };
 
@@ -144,9 +149,21 @@ const urlBadge = codice => {
 };
 let stopScanner = null;
 const fermaInterazioni = () => {
+  S.vista++;
   clearInterval(S.timer);
   S.timer = 0;
+  clearInterval(S.refreshTimer);
+  S.refreshTimer = 0;
   stopScanner?.();
+};
+const avviaRefresh = (periodo, aggiorna) => {
+  const vista = S.vista;
+  S.refreshTimer = setInterval(async () => {
+    if (S.refreshInCorso || S.vista !== vista) return;
+    S.refreshInCorso = true;
+    try { await aggiorna(() => S.vista === vista); }
+    finally { S.refreshInCorso = false; }
+  }, periodo);
 };
 const svuotaCacheProgramma = () => {
   for (const key of ['programma', 'completamenti', 'evento_attivo']) store.del(key);
@@ -183,6 +200,14 @@ const optSquadra = sel => {
     </optgroup>`;
   }).join('');
 };
+
+const personalizzazionePer = (fase, ruolo, gruppoRuolo) => {
+  const righe = fase.personalizzazioni || [];
+  return righe.find(p => p.ruolo === ruolo)
+    || righe.find(p => p.ruolo === gruppoRuolo) || null;
+};
+const gruppoDiRuolo = ruolo => RuoliDB.find(r => r.nome === ruolo)?.gruppo
+  || CFG.GROUPS.find(g => g.label === ruolo || g.units.includes(ruolo))?.label || '';
 
 async function loadRuoliDB() {
   if (!ONLINE) return;
@@ -432,12 +457,15 @@ async function carica() {
     Completamenti = store.get('completamenti', {});
     return { demo: true };
   }
+  const identita = `${S.role}|${S.badge}|${S.token}`;
+  const versione = S.mutationVersion;
   try {
     const p = new URLSearchParams({ ruolo: S.role || '', gruppo: gruppo() });
     const r = await chiedi(CFG.API + '/programma?' + p, {
       cache: 'no-store',
       headers: authHeaders()
     });
+    if (`${S.role}|${S.badge}|${S.token}` !== identita || S.mutationVersion !== versione) return { stale: true };
     if (r.status === 401) {
       if (isAdmin()) {
         S.token = null; S.role = null; S.gruppo = '';
@@ -449,6 +477,7 @@ async function carica() {
     }
     if (!r.ok) throw new Error('Il server ha risposto ' + r.status + '.');
     const d = await r.json();
+    if (`${S.role}|${S.badge}|${S.token}` !== identita || S.mutationVersion !== versione) return { stale: true };
     store.set('programma', d);
     Fasce = d.fasce || [];
     EventoAttivo = !!d.attivo;
@@ -456,6 +485,7 @@ async function carica() {
     store.set('completamenti', Completamenti);
     return {};
   } catch (x) {
+    if (`${S.role}|${S.badge}|${S.token}` !== identita || S.mutationVersion !== versione) return { stale: true };
     const c = store.get('programma');
     if (c) {
       Fasce = c.fasce || [];
@@ -473,11 +503,14 @@ let salvataggioTappa = false;
 async function toggleCompletato(fasciaId) {
   const r = S.role;
   if (!r || salvataggioTappa) return;
+  const fase = Fasce.find(f => f.id === fasciaId);
+  if (!fase || (fase.mia || personalizzazionePer(fase, r, gruppo()))?.nessunaAttivita === true) return;
   const list = Completamenti[r] || [];
   const fatto = list.includes(fasciaId);
   const nuovaLista = fatto ? list.filter(id => id !== fasciaId) : [...list, fasciaId];
   Completamenti[r] = nuovaLista;
   salvataggioTappa = true;
+  S.mutationVersion++;
   renderList(false);
   try {
     if (ONLINE) {
@@ -499,6 +532,7 @@ async function toggleCompletato(fasciaId) {
     avvisa('Tappa non salvata: ' + e.message, true);
   } finally {
     salvataggioTappa = false;
+    S.mutationVersion++;
     if ($('#tl')) renderList(false);
   }
 }
@@ -521,9 +555,10 @@ function renderList(scroll) {
   const completatiRole = Completamenti[S.role] || [];
 
   const html = ord.map((f) => {
-    const m = f.mia || null;
+    const m = f.mia || personalizzazionePer(f, S.role, gruppo());
+    const nessunaAttivita = m?.nessunaAttivita === true;
     // Senza personalizzazione per questa squadra: niente spostamento, niente luogo personale.
-    const durataSpost = m ? parseInt(f.durataSpostamento || 0, 10) : 0;
+    const durataSpost = m && !nessunaAttivita ? parseInt(f.durataSpostamento || 0, 10) : 0;
     const tInizio = new Date(f.inizio);
     const tFineSpost = new Date(tInizio.getTime() + durataSpost * 60000);
     const tInizioTappa = durataSpost > 0 ? tFineSpost : tInizio;
@@ -532,15 +567,15 @@ function renderList(scroll) {
     const stSpost = durataSpost > 0 ? getStatoOrario(tInizio, tFineSpost, now) : null;
     const stTappa = getStatoOrario(tInizioTappa, tFineTappa, now);
 
-    const luogoTeam = m?.tappa || '';
-    const noteTeam = m?.note || f.note || '';
-    const istruzioniSpost = m?.istruzioniSpostamento || m?.istruzioni || '';
-    const isFatto = completatiRole.includes(f.id);
+    const luogoTeam = nessunaAttivita ? '' : (m?.tappa || '');
+    const noteTeam = nessunaAttivita ? (f.note || '') : (m?.note || f.note || '');
+    const istruzioniSpost = nessunaAttivita ? '' : (m?.istruzioniSpostamento || m?.istruzioni || '');
+    const isFatto = !nessunaAttivita && completatiRole.includes(f.id);
 
     // Ritardo = minuti passati dalla FINE della tappa, se non è ancora segnata come completata.
     // Dopo 1 minuto: gialla. Dopo 5 minuti: rossa e lampeggiante.
     const minRitardo = tFineTappa && !isNaN(tFineTappa) ? (now - tFineTappa) / 60000 : -1;
-    const allarme = EventoAttivo && !isFatto && minRitardo >= 1
+    const allarme = EventoAttivo && !nessunaAttivita && !isFatto && minRitardo >= 1
       ? (minRitardo >= 5 ? 'alert' : 'warn')
       : '';
     const pillAllarme = allarme === 'alert' ? '<span class="pill alarm-pill">Ritardo critico</span>'
@@ -565,15 +600,15 @@ function renderList(scroll) {
       <div class="tm">${fmt(tInizioTappa)}${dataOk(tFineTappa) ? `<small>fino ${fmt(tFineTappa)}</small>` : ''}</div>
       <div class="rail"></div>
       <div class="nd">
-        <h3>${esc(f.titolo)}${stTappa === 'now' ? '<span class="pill">In svolgimento</span>' : ''}${isFatto ? '<span class="pill ok-pill">Completata</span>' : ''}${pillAllarme}</h3>
+        <h3>${esc(f.titolo)}${nessunaAttivita ? '<span class="pill">Nessuna attività</span>' : stTappa === 'now' ? '<span class="pill">In svolgimento</span>' : ''}${isFatto ? '<span class="pill ok-pill">Completata</span>' : ''}${pillAllarme}</h3>
         ${luogoTeam ? `<p class="loc">Luogo: ${esc(luogoTeam)}</p>` : ''}
         ${noteTeam ? `<p class="mut">Nota: ${esc(noteTeam)}</p>` : ''}
 
-        <div class="chk-box">
+        ${nessunaAttivita ? '<p class="mut">Puoi seguire questa fase, ma non hai attività da completare.</p>' : `<div class="chk-box">
           <button class="chk-btn ${isFatto ? 'done' : ''}" data-fascia="${esc(f.id)}" ${salvataggioTappa ? 'disabled' : ''}>
             ${isFatto ? '[X] Tappa completata' : '[ ] Segna come completata'}
           </button>
-        </div>
+        </div>`}
       </div>
     </li>`;
 
@@ -592,6 +627,16 @@ function renderList(scroll) {
   if (scroll) $('.it.now, .it.next')?.scrollIntoView({ block: 'center' });
 }
 
+function renderBannerTimeline(d) {
+  let bHtml = !EventoAttivo
+    ? `<div class="banner warn"><b>EVENTO IN ATTESA DI AVVIO</b><br>Il coordinatore non ha ancora attivato l'evento. Gli orari sottostanti sono indicativi.</div>`
+    : `<div class="banner active"><b>EVENTO ATTIVO</b> - Segui gli orari e segna le tappe man mano che le completi.</div>`;
+  if (d.offline) bHtml += `<div class="banner bad">${esc(d.errore)} ${d.senzaCache ? 'Nessun programma disponibile offline.' : 'Stiamo vedendo l\'ultimo programma salvato.'}<button class="btn mini" id="retry">Riprova</button></div>`;
+  else if (d.demo) bHtml += '<div class="banner">Dati in modalità offline/demo.</div>';
+  $('#banner').innerHTML = bHtml;
+  $('#retry')?.addEventListener('click', showTimeline);
+}
+
 const batto = () => {
   const c = $('#clock');
   if (!c) { clearInterval(S.timer); S.timer = 0; return; }
@@ -602,6 +647,7 @@ const batto = () => {
 /* ---------- Schermata 4: Timeline Utente ---------- */
 async function showTimeline() {
   fermaInterazioni();
+  const vista = S.vista;
   inCorso = true;
   screen.innerHTML = `<header class="top"><b id="clock"></b><button class="chip" id="chg">${esc(S.role || 'Ruolo')}, cambia</button></header>
     <div class="wrap">
@@ -615,26 +661,18 @@ async function showTimeline() {
   clearInterval(S.timer); S.timer = setInterval(batto, 1000);
 
   const d = await carica();
-  if (d.revocato) return;
+  if (d.revocato || d.stale || S.vista !== vista) return;
   inCorso = false;
 
-  let bHtml = '';
-  if (!EventoAttivo) {
-    bHtml += `<div class="banner warn"><b>EVENTO IN ATTESA DI AVVIO</b><br>Il coordinatore non ha ancora attivato l'evento. Gli orari sottostanti sono indicativi.</div>`;
-  } else {
-    bHtml += `<div class="banner active"><b>EVENTO ATTIVO</b> - Segui gli orari e segna le tappe man mano che le completi.</div>`;
-  }
-
-  if (d.offline) {
-    bHtml += `<div class="banner bad">${esc(d.errore)} ${d.senzaCache ? 'Nessun programma disponibile offline.' : 'Stiamo vedendo l\'ultimo programma salvato.'}<button class="btn mini" id="retry">Riprova</button></div>`;
-  } else if (d.demo) {
-    bHtml += '<div class="banner">Dati in modalità offline/demo.</div>';
-  }
-
-  $('#banner').innerHTML = bHtml;
-  $('#retry')?.addEventListener('click', showTimeline);
-
+  renderBannerTimeline(d);
   renderList(true);
+  avviaRefresh(120000, async valida => {
+    if (salvataggioTappa) return;
+    const aggiornati = await carica();
+    if (!valida() || aggiornati.revocato || aggiornati.stale) return;
+    renderBannerTimeline(aggiornati);
+    renderList(false);
+  });
 }
 
 /* ---------- Schermata 5: Admin Dashboard & Modifica ---------- */
@@ -644,11 +682,14 @@ async function showAdmin() {
   }
 
   fermaInterazioni();
+  const vista = S.vista;
   inCorso = true;
   const dati = await carica();
-  if (dati.revocato) return;
+  if (dati.revocato || dati.stale || S.vista !== vista) return;
   await loadRuoliDB();
+  if (S.vista !== vista) return;
   inCorso = false;
+  let bozzaForm = false;
 
 
   screen.innerHTML = `<header class="top">
@@ -656,7 +697,7 @@ async function showAdmin() {
       <button class="chip" id="admLogout">Esci da Admin</button>
     </header>
     <div class="wrap">
-      ${dati.offline ? `<div class="banner bad">${esc(dati.errore)} I dati potrebbero non essere aggiornati.</div>` : ''}
+      <div class="banner bad" id="adminSync" ${dati.offline ? '' : 'hidden'}>${dati.offline ? `${esc(dati.errore)} I dati potrebbero non essere aggiornati.` : ''}</div>
       <!-- Toggle Attivazione Generale -->
       <div class="toggle-card ${EventoAttivo ? 'active' : ''}">
         <div class="toggle-info">
@@ -693,6 +734,8 @@ async function showAdmin() {
     const val = e.target.checked;
     const precedente = EventoAttivo;
     e.target.disabled = true;
+    S.operazioneAdmin = true;
+    S.mutationVersion++;
     EventoAttivo = val;
     store.set('evento_attivo', val);
     
@@ -719,7 +762,21 @@ async function showAdmin() {
       }
     }
     e.target.disabled = false;
+    S.operazioneAdmin = false;
+    S.mutationVersion++;
   };
+
+  const aggiornaStatoEvento = () => {
+    const toggle = $('#toggleEvt');
+    if (!toggle || toggle.disabled) return;
+    toggle.checked = EventoAttivo;
+    $('.toggle-card').className = `toggle-card ${EventoAttivo ? 'active' : ''}`;
+    $('.toggle-info h3').textContent = EventoAttivo ? 'EVENTO ATTIVO' : 'EVENTO IN PAUSA / IN ATTESA';
+    $('.toggle-info p').textContent = EventoAttivo ? 'Le tappe e gli indicatori di ritardo sono attivi.' : 'Attiva l\'evento quando il programma deve iniziare.';
+  };
+
+  $('#tabContent').oninput = () => { bozzaForm = true; };
+  $('#tabContent').onchange = () => { bozzaForm = true; };
 
   const renderTab = () => {
     const c = $('#tabContent');
@@ -727,19 +784,21 @@ async function showAdmin() {
 
     if (S.tabAdmin === 'dashboard') {
       const now = new Date();
-      const nTotali = Fasce.length; // Ogni fase in programma è una tappa dell'evento
       let html = '<div class="dashboard-grid">';
       
       TUTTE_LE_SQUADRE.forEach(sq => {
+        const gruppoSq = gruppoDiRuolo(sq);
+        const attive = Fasce.filter(f => personalizzazionePer(f, sq, gruppoSq)?.nessunaAttivita !== true);
+        const nTotali = attive.length;
         const rawCompl = Completamenti[sq] || [];
         // Filtra solo le tappe attualmente esistenti in Fasce e rimuovi duplicati
-        const validCompl = Array.from(new Set(rawCompl.filter(id => Fasce.some(f => f.id === id))));
+        const validCompl = Array.from(new Set(rawCompl.filter(id => attive.some(f => f.id === id))));
 
         const nCompletati = validCompl.length;
         const perc = nTotali > 0 ? Math.min(100, Math.round((nCompletati / nTotali) * 100)) : 0;
 
         let inRitardo = false;
-        Fasce.forEach(f => {
+        attive.forEach(f => {
           if (f.fine && new Date(f.fine) < now && !validCompl.includes(f.id)) {
             inRitardo = true;
           }
@@ -747,7 +806,7 @@ async function showAdmin() {
 
         const isComplete = nTotali > 0 && nCompletati === nTotali;
         const statusClass = isComplete ? 'completed' : inRitardo ? 'late' : '';
-        const badgeLabel = isComplete ? 'Completato' : inRitardo ? 'In Ritardo' : 'In Corso';
+        const badgeLabel = nTotali === 0 ? 'Nessuna attività' : isComplete ? 'Completato' : inRitardo ? 'In Ritardo' : 'In Corso';
         const badgeClass = isComplete ? 'ok' : inRitardo ? 'late' : 'idle';
 
         html += `<div class="team-card ${statusClass}">
@@ -775,7 +834,7 @@ async function showAdmin() {
             <h3>${esc(f.titolo)} ${durataSpost > 0 ? `<small style="color:var(--shift)">(Spostamento: ${durataSpost}m)</small>` : ''}</h3>
             ${f.note ? `<p class="mut">${esc(f.note)}</p>` : ''}
             <ul class="pv">
-              ${(f.personalizzazioni || []).map(p => `<li><b>${esc(p.ruolo)}</b> → Luogo: <i>${esc(p.tappa || 'N/D')}</i> ${p.istruzioniSpostamento ? `<br><small>Spostamento: ${esc(p.istruzioniSpostamento)}</small>` : ''} ${p.note ? `<br><small>Nota: ${esc(p.note)}</small>` : ''}</li>`).join('') || '<li class="mut">Nessuna personalizzazione team</li>'}
+              ${(f.personalizzazioni || []).map(p => `<li><b>${esc(p.ruolo)}</b> ${p.nessunaAttivita ? '→ Nessuna attività' : `→ Luogo: <i>${esc(p.tappa || 'N/D')}</i> ${p.istruzioniSpostamento ? `<br><small>Spostamento: ${esc(p.istruzioniSpostamento)}</small>` : ''} ${p.note ? `<br><small>Nota: ${esc(p.note)}</small>` : ''}`}</li>`).join('') || '<li class="mut">Nessuna personalizzazione team</li>'}
             </ul>
           </div>
         </li>`;
@@ -820,10 +879,16 @@ async function showAdmin() {
       $('#ff [name=inizio]').value = perInput(calcolaProssimoInizio());
       $('#aggiungiAssegnazione').onclick = () => {
         $('#nuoveAssegnazioni').insertAdjacentHTML('beforeend', nuovaAssegnazione());
+        bozzaForm = true;
       };
       $('#nuoveAssegnazioni').onclick = e => {
         const btn = e.target.closest('[data-rimuovi-assegnazione]');
         if (btn) btn.closest('.new-assignment').remove();
+        if (btn) bozzaForm = true;
+      };
+      $('#nuoveAssegnazioni').onchange = e => {
+        if (e.target.name === 'nessunaAttivita')
+          e.target.closest('.new-assignment').querySelector('.assignment-details').hidden = e.target.checked;
       };
       $('#ff').onsubmit = e => {
         e.preventDefault();
@@ -845,6 +910,7 @@ async function showAdmin() {
         $('#nuoveAssegnazioni').replaceChildren();
         $('#ff [name=inizio]').value = perInput(calcolaProssimoInizio());
         disegnaFasiEditor(); segnaSporco();
+        bozzaForm = false;
         avvisa('Fase aggiunta');
       };
 
@@ -853,6 +919,8 @@ async function showAdmin() {
       $('#salva').onclick = async () => {
         const b = $('#salva');
         attesa(b, 'Salvo...');
+        S.operazioneAdmin = true;
+        S.mutationVersion++;
         try {
           const r = await chiedi(CFG.API + '/admin', {
             method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + S.token },
@@ -869,16 +937,18 @@ async function showAdmin() {
           avvisa(x.message, true);
         }
         pronto(b);
+        S.operazioneAdmin = false;
+        S.mutationVersion++;
       };
 
       $('#expj').onclick = () => scarica('programma.json', JSON.stringify({ fasce: Fasce, attivo: EventoAttivo }, null, 2), 'application/json');
 
       $('#expc').onclick = () => {
-        const righe = [['titolo', 'inizio', 'fine', 'durata_spostamento', 'nota_generale', 'squadra', 'luogo', 'istruzioni_spostamento', 'nota_team']];
+        const righe = [['titolo', 'inizio', 'fine', 'durata_spostamento', 'nota_generale', 'squadra', 'luogo', 'istruzioni_spostamento', 'nota_team', 'nessuna_attivita']];
         for (const f of Fasce) {
           const ps = f.personalizzazioni || [];
-          if (!ps.length) righe.push([f.titolo, f.inizio, f.fine || '', f.durataSpostamento || 0, f.note || '', '', '', '', '']);
-          for (const p of ps) righe.push([f.titolo, f.inizio, f.fine || '', f.durataSpostamento || 0, f.note || '', p.ruolo, p.tappa, p.istruzioniSpostamento || p.istruzioni || '', p.note || '']);
+          if (!ps.length) righe.push([f.titolo, f.inizio, f.fine || '', f.durataSpostamento || 0, f.note || '', '', '', '', '', '']);
+          for (const p of ps) righe.push([f.titolo, f.inizio, f.fine || '', f.durataSpostamento || 0, f.note || '', p.ruolo, p.tappa, p.istruzioniSpostamento || p.istruzioni || '', p.note || '', p.nessunaAttivita === true ? 'true' : 'false']);
         }
         scarica('programma.csv', csv(righe), 'text/csv');
       };
@@ -898,7 +968,7 @@ async function showAdmin() {
               durataSpostamento: parseInt(f.durataSpostamento || 0, 10),
               note: f.note || '',
               personalizzazioni: (f.personalizzazioni || []).map(p => ({
-                id: p.id || 'p' + uid(), ruolo: p.ruolo, tappa: p.tappa || '', istruzioniSpostamento: p.istruzioniSpostamento || p.istruzioni || '', note: p.note || ''
+                id: p.id || 'p' + uid(), ruolo: p.ruolo, tappa: p.tappa || '', istruzioniSpostamento: p.istruzioniSpostamento || p.istruzioni || '', note: p.note || '', nessunaAttivita: p.nessunaAttivita === true
               }))
             }));
           } else {
@@ -916,13 +986,14 @@ async function showAdmin() {
               const f = perTitolo.get(k);
               const sq = (r.squadra || '').trim();
               if (sq && !f.personalizzazioni.some(p => p.ruolo === sq))
-                f.personalizzazioni.push({ id: 'p' + uid(), ruolo: sq, tappa: (r.luogo || '').trim(), istruzioniSpostamento: (r.istruzioni_spostamento || '').trim(), note: (r.nota_team || '').trim() });
+                f.personalizzazioni.push({ id: 'p' + uid(), ruolo: sq, tappa: (r.luogo || '').trim(), istruzioniSpostamento: (r.istruzioni_spostamento || '').trim(), note: (r.nota_team || '').trim(), nessunaAttivita: /^(true|1|si|sì)$/i.test((r.nessuna_attivita || '').trim()) });
             }
             Fasce = [...perTitolo.values()];
           }
           $('#imp').value = '';
           $('#aerr').textContent = '';
           disegnaFasiEditor(); segnaSporco();
+          bozzaForm = false;
           avvisa(`Importate ${Fasce.length} fasi`);
         } catch (x) { $('#aerr').textContent = 'Import non riuscito: ' + x.message; }
       };
@@ -931,10 +1002,10 @@ async function showAdmin() {
     }
   };
 
-  $('#tabDash').onclick = () => { S.tabAdmin = 'dashboard'; updateTabs(); renderTab(); };
-  $('#tabTl').onclick = () => { S.tabAdmin = 'timeline'; updateTabs(); renderTab(); };
-  $('#tabMod').onclick = () => { S.tabAdmin = 'modifica'; updateTabs(); renderTab(); };
-  $('#tabRuoli').onclick = () => { S.tabAdmin = 'ruoli'; updateTabs(); renderTab(); };
+  $('#tabDash').onclick = () => { bozzaForm = false; S.tabAdmin = 'dashboard'; updateTabs(); renderTab(); };
+  $('#tabTl').onclick = () => { bozzaForm = false; S.tabAdmin = 'timeline'; updateTabs(); renderTab(); };
+  $('#tabMod').onclick = () => { bozzaForm = false; S.tabAdmin = 'modifica'; updateTabs(); renderTab(); };
+  $('#tabRuoli').onclick = () => { bozzaForm = false; S.tabAdmin = 'ruoli'; updateTabs(); renderTab(); };
 
   function updateTabs() {
     $('#tabDash').className = `tab-btn ${S.tabAdmin === 'dashboard' ? 'active' : ''}`;
@@ -944,6 +1015,25 @@ async function showAdmin() {
   }
 
   renderTab();
+  avviaRefresh(30000, async valida => {
+    if (S.operazioneAdmin) return;
+    const fasceLocali = Fasce;
+    const mantieniBozza = sporco || (S.tabAdmin === 'modifica' && (bozzaForm || !!edF || !!edP));
+    const aggiornati = await carica();
+    if (!valida() || aggiornati.revocato || aggiornati.stale) return;
+    if (mantieniBozza) Fasce = fasceLocali;
+    await loadRuoliDB();
+    if (!valida()) return;
+    aggiornaStatoEvento();
+    const banner = $('#adminSync');
+    if (banner) {
+      banner.hidden = !aggiornati.offline;
+      banner.textContent = aggiornati.offline ? `${aggiornati.errore} I dati potrebbero non essere aggiornati.` : '';
+    }
+    if (S.tabAdmin === 'modifica' && mantieniBozza) return;
+    if (S.tabAdmin === 'ruoli' && bozzaForm) return;
+    renderTab();
+  });
 }
 
 function calcolaProssimoInizio() {
@@ -968,10 +1058,15 @@ const nuovaAssegnazione = () => `<div class="new-assignment">
     <div><label>Ruolo o gruppo</label><select name="ruolo" required>
       <option value="">Seleziona un ruolo o gruppo</option>${optSquadra('')}
     </select></div>
+  </div>
+  <label class="inactive-label"><input type="checkbox" name="nessunaAttivita"> Nessuna attività per questo ruolo in questa fase</label>
+  <div class="assignment-details">
+  <div class="assignment-main">
     <div><label>Luogo personale</label><input name="tappa" placeholder="es. Laboratorio 2" autocomplete="off"></div>
   </div>
   <label>Istruzioni per lo spostamento</label><textarea name="istruzioniSpostamento" rows="2" placeholder="es. Prendi le scale B e vai al 1° piano"></textarea>
   <label>Note personali per questo team</label><input name="note" placeholder="es. Controllare i badge prima di entrare" autocomplete="off">
+  </div>
   <button class="btn ghost" type="button" data-rimuovi-assegnazione>Rimuovi assegnazione</button>
 </div>`;
 
@@ -980,12 +1075,14 @@ function leggiNuoveAssegnazioni(form) {
   return [...form.querySelectorAll('.new-assignment')].map(riga => {
     const valore = nome => riga.querySelector(`[name="${nome}"]`).value.trim();
     const ruolo = valore('ruolo');
+    const nessunaAttivita = riga.querySelector('[name="nessunaAttivita"]')?.checked === true;
     if (!ruolo) throw new Error('Seleziona un ruolo o un gruppo per ogni assegnazione.');
     if (visti.has(ruolo)) throw new Error(`"${ruolo}" ha già una riga in questa fase.`);
     visti.add(ruolo);
     return {
-      id: 'p' + uid(), ruolo, tappa: valore('tappa'),
-      istruzioniSpostamento: valore('istruzioniSpostamento'), note: valore('note')
+      id: 'p' + uid(), ruolo, nessunaAttivita, tappa: nessunaAttivita ? '' : valore('tappa'),
+      istruzioniSpostamento: nessunaAttivita ? '' : valore('istruzioniSpostamento'),
+      note: nessunaAttivita ? '' : valore('note')
     };
   });
 }
@@ -1009,27 +1106,35 @@ const modFase = f => `<form class="mod" data-f="${esc(f.id)}">
   <button class="btn">Salva fase</button></form>`;
 
 const rigaSquadra = (f, p) => `<div class="riga"><div>
-    <b>${esc(p.ruolo)}</b> → Luogo: <i>${esc(p.tappa || 'N/D')}</i>
+    <b>${esc(p.ruolo)}</b> ${p.nessunaAttivita ? '→ Nessuna attività' : `→ Luogo: <i>${esc(p.tappa || 'N/D')}</i>
     ${p.istruzioniSpostamento ? `<small>Spostamento: ${esc(p.istruzioniSpostamento)}</small>` : ''}
-    ${p.note ? `<small>Nota team: ${esc(p.note)}</small>` : ''}
+    ${p.note ? `<small>Nota team: ${esc(p.note)}</small>` : ''}`}
   </div><div class="btnx">
     <button class="x" data-pe="${esc(p.id)}" data-f="${esc(f.id)}" title="Modifica">&#9998;</button>
     <button class="x" data-pd="${esc(p.id)}" data-f="${esc(f.id)}" title="Elimina">&times;</button></div></div>`;
 
 const modSquadra = (f, p) => `<form class="mod mod-p" data-f="${esc(f.id)}" data-p="${esc(p.id)}">
   <label>Squadra / Aula</label><select name="ruolo">${optSquadra(p.ruolo)}</select>
+  <label class="inactive-label"><input type="checkbox" name="nessunaAttivita" ${p.nessunaAttivita ? 'checked' : ''}> Nessuna attività per questo ruolo in questa fase</label>
+  <div class="assignment-details" ${p.nessunaAttivita ? 'hidden' : ''}>
   <label>Luogo personale del team</label><input name="tappa" value="${esc(p.tappa || '')}" placeholder="es. Laboratorio 2" autocomplete="off">
   <label>Istruzioni per lo spostamento</label><textarea name="istruzioniSpostamento" rows="2" placeholder="es. Prendi le scale B e vai al 1° piano">${esc(p.istruzioniSpostamento || p.istruzioni || '')}</textarea>
   <label>Note personali per questo team</label><input name="note" value="${esc(p.note || '')}" placeholder="es. Controllare i badge prima di entrare">
+  </div>
   <button class="btn">Salva squadra</button></form>`;
 
 const aggSquadra = f => `<form class="agg" data-f="${esc(f.id)}">
   <div class="due">
     <div><label>Squadra / Aula</label><select name="ruolo">${optSquadra('')}</select></div>
+  </div>
+  <label class="inactive-label"><input type="checkbox" name="nessunaAttivita"> Nessuna attività per questo ruolo in questa fase</label>
+  <div class="assignment-details">
+  <div class="due">
     <div><label>Luogo personale</label><input name="tappa" placeholder="es. Laboratorio 2" autocomplete="off"></div>
   </div>
   <label>Istruzioni per lo spostamento</label><textarea name="istruzioniSpostamento" rows="2" placeholder="es. Prendi le scale B e vai al 1° piano"></textarea>
   <label>Note personali per questo team</label><input name="note" placeholder="es. Controllare le schede agli ingressi">
+  </div>
   <button class="btn ghost">Aggiungi personalizzazione team</button></form>`;
 
 function disegnaFasiEditor() {
@@ -1067,6 +1172,11 @@ function disegnaFasiEditor() {
     }
   };
 
+  $('#lf').onchange = e => {
+    if (e.target.name === 'nessunaAttivita')
+      e.target.closest('form').querySelector('.assignment-details').hidden = e.target.checked;
+  };
+
   $('#lf').onsubmit = e => {
     e.preventDefault();
     const form = e.target, d = new FormData(form);
@@ -1080,9 +1190,10 @@ function disegnaFasiEditor() {
       if (f.personalizzazioni.some(x => x.id !== p.id && x.ruolo === ruolo))
         return avvisa(`"${ruolo}" ha già una riga in "${f.titolo}"`, true);
       p.ruolo = ruolo;
-      p.tappa = (d.get('tappa') || '').trim();
-      p.istruzioniSpostamento = (d.get('istruzioniSpostamento') || '').trim();
-      p.note = (d.get('note') || '').trim();
+      p.nessunaAttivita = d.has('nessunaAttivita');
+      p.tappa = p.nessunaAttivita ? '' : (d.get('tappa') || '').trim();
+      p.istruzioniSpostamento = p.nessunaAttivita ? '' : (d.get('istruzioniSpostamento') || '').trim();
+      p.note = p.nessunaAttivita ? '' : (d.get('note') || '').trim();
       edP = null;
       msg = 'Squadra aggiornata';
     } else if (form.classList.contains('agg')) {
@@ -1091,9 +1202,10 @@ function disegnaFasiEditor() {
         return avvisa(`"${ruolo}" ha già una riga in "${f.titolo}"`, true);
       f.personalizzazioni.push({
         id: 'p' + uid(), ruolo,
-        tappa: (d.get('tappa') || '').trim(),
-        istruzioniSpostamento: (d.get('istruzioniSpostamento') || '').trim(),
-        note: (d.get('note') || '').trim()
+        nessunaAttivita: d.has('nessunaAttivita'),
+        tappa: d.has('nessunaAttivita') ? '' : (d.get('tappa') || '').trim(),
+        istruzioniSpostamento: d.has('nessunaAttivita') ? '' : (d.get('istruzioniSpostamento') || '').trim(),
+        note: d.has('nessunaAttivita') ? '' : (d.get('note') || '').trim()
       });
       msg = 'Squadra aggiunta';
     } else {

@@ -45,9 +45,17 @@ L'editor JSON della lista completa rimane nella sezione **Gestione avanzata**.
 Nel pannello admin, aprire **Fasi e istruzioni**. Il modulo **Nuova Fase**
 permette di aggiungere più assegnazioni prima di creare la fase: per ogni riga
 si sceglie un ruolo o un gruppo e si possono indicare luogo, istruzioni per lo
-spostamento e note. Si possono rimuovere le righe non necessarie. La fase e le
+spostamento e note. Se un ruolo deve solo seguire la fase, selezionare
+**Nessuna attività** nella sua assegnazione: la fase resta visibile, ma il ruolo
+non può segnarla come completata e non viene contato in ritardo nella dashboard.
+Un'assegnazione specifica per il ruolo prevale su quella del gruppo. Si possono
+rimuovere le righe non necessarie. La fase e le
 sue assegnazioni vengono aggiunte insieme al programma; per renderle disponibili
 allo staff occorre poi premere **Salva modifiche sul server**.
+
+La timeline dello staff ricarica automaticamente il programma e i completamenti
+dal server ogni 2 minuti; il pannello admin lo fa ogni 30 secondi. Un aggiornamento
+automatico non cancella i dati già modificati nell'editor e ancora da salvare.
 
 ## Rimozione del sistema di notifiche
 

@@ -7,6 +7,8 @@ const vm = require('node:vm');
 function frontend(response, initialStorage = {}) {
   const storage = new Map(Object.entries(initialStorage).map(([key, value]) => [key, JSON.stringify(value)]));
   const elements = new Map();
+  const intervals = new Map();
+  let nextInterval = 0;
   const element = selector => {
     if (!elements.has(selector)) elements.set(selector, { innerHTML: '', textContent: '',
       dataset: {}, addEventListener() {}, scrollIntoView() {} });
@@ -19,15 +21,17 @@ function frontend(response, initialStorage = {}) {
     localStorage: { getItem: key => storage.get(key) ?? null,
       setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) },
     matchMedia: () => ({ matches: false }), addEventListener() {},
-    setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
-    fetch: async () => response };
+    setTimeout: () => 1, clearTimeout() {},
+    setInterval: (callback, ms) => { const id = ++nextInterval; intervals.set(id, { callback, ms }); return id; },
+    clearInterval: id => intervals.delete(id),
+    fetch: async (...args) => typeof response === 'function' ? response(...args) : response };
   sandbox.window = sandbox;
   const context = vm.createContext(sandbox);
   const source = fs.readFileSync(path.join(__dirname, '..', 'app.js'), 'utf8').replace(/boot\(\);\s*$/, '');
   vm.runInContext(source, context);
   const run = code => vm.runInContext(code, context);
   run("S.role = 'C1'; S.badge = '1111-1111-1111-1111'; Fasce = [{ id: 'f1', titolo: 'Accoglienza' }]");
-  return { run, storage, element };
+  return { run, storage, element, intervals };
 }
 
 test('avvio mobile senza credenziali arriva al benvenuto senza permessi di notifica', async () => {
@@ -74,6 +78,7 @@ test('un server indisponibile senza cache non produce un programma di esempio', 
 test('una nuova fase raccoglie insieme le istruzioni di più ruoli e rifiuta duplicati', () => {
   const f = frontend();
   assert.match(f.run('nuovaAssegnazione()'), /name="istruzioniSpostamento"/);
+  assert.match(f.run('nuovaAssegnazione()'), /name="nessunaAttivita"/);
   const righe = `[{ ruolo: 'Aula', tappa: 'Atrio', istruzioniSpostamento: 'Scala nord', note: '' },
     { ruolo: 'C1', tappa: 'Laboratorio 2', istruzioniSpostamento: 'Prendi la scala sud', note: 'Porta i badge' }]`;
   const form = dati => `({ querySelectorAll: () => ${dati}.map(valori => ({
@@ -89,4 +94,73 @@ test('una nuova fase raccoglie insieme le istruzioni di più ruoli e rifiuta dup
   assert.ok(personalizzazioni.every(p => p.id.startsWith('p')));
   assert.throws(() => f.run(`leggiNuoveAssegnazioni(${form("[{ ruolo: 'C1' }, { ruolo: 'C1' }]")})`),
     /ha già una riga/);
+});
+
+test('ruolo senza attività vede la fase senza pulsante e non invia completamenti', async () => {
+  let richieste = 0;
+  const f = frontend(async () => { richieste++; return { ok: true, json: async () => ({ ok: true }) }; });
+  f.run(`Fasce = [{ id: 'f1', titolo: 'Accoglienza', inizio: '2026-10-10T10:00:00Z',
+    mia: { ruolo: 'C1', nessunaAttivita: true } }]; inCorso = false; renderList(true)`);
+  assert.match(f.element('#tl').innerHTML, /Accoglienza/);
+  assert.match(f.element('#tl').innerHTML, /Nessuna attività/);
+  assert.doesNotMatch(f.element('#tl').innerHTML, /data-fascia="f1"/);
+  await f.run("toggleCompletato('f1')");
+  assert.equal(richieste, 0);
+});
+
+test('l’assegnazione inattiva viene salvata senza luogo né istruzioni', () => {
+  const f = frontend();
+  const dati = f.run(`leggiNuoveAssegnazioni({ querySelectorAll: () => [{
+    querySelector: selettore => selettore === '[name="nessunaAttivita"]'
+      ? { checked: true } : { value: ({ ruolo: 'C1', tappa: 'Atrio',
+        istruzioniSpostamento: 'Vai al primo piano', note: 'Nota' })[selettore.slice(7, -2)] }
+  }] })`);
+  assert.equal(dati[0].nessunaAttivita, true);
+  assert.equal(dati[0].tappa, '');
+  assert.equal(dati[0].istruzioniSpostamento, '');
+  assert.equal(dati[0].note, '');
+});
+
+test('staff aggiorna programma e completamenti dal server ogni 2 minuti', async () => {
+  let calls = 0;
+  const f = frontend(async () => ({ ok: true, json: async () => ({
+    attivo: true, completamenti: { C1: calls++ ? ['f1'] : [] },
+    fasce: [{ id: 'f1', titolo: 'Accoglienza', inizio: '2026-10-10T10:00:00Z' }]
+  }) }));
+  await f.run('showTimeline()');
+  const timer = [...f.intervals.values()].find(i => i.ms === 120000);
+  assert.ok(timer);
+  assert.match(f.element('#tl').innerHTML, /Segna come completata/);
+  await timer.callback();
+  assert.match(f.element('#tl').innerHTML, /Tappa completata/);
+});
+
+test('admin aggiorna i completamenti ogni 30 secondi mantenendo una bozza di programma', async () => {
+  let calls = 0;
+  const f = frontend(async (url) => url.includes('/programma')
+    ? { ok: true, json: async () => ({ attivo: true,
+      completamenti: { C1: calls++ ? ['f1'] : [] },
+      fasce: [{ id: 'f1', titolo: calls > 1 ? 'Remoto' : 'Originale' }] }) }
+    : { ok: true, json: async () => ({ ruoli: [{ nome: 'C1', gruppo: 'Corridoio' }] }) });
+  f.run("S.role = 'Admin'; S.token = 'test-token'");
+  await f.run('showAdmin()');
+  f.run("Fasce[0].titolo = 'Bozza locale'; sporco = true");
+  const timer = [...f.intervals.values()].find(i => i.ms === 30000);
+  assert.ok(timer);
+  await timer.callback();
+  assert.equal(f.run('Fasce[0].titolo'), 'Bozza locale');
+  assert.equal(f.run('Completamenti.C1[0]'), 'f1');
+});
+
+test('dashboard non considera in ritardo una fase inattiva per il ruolo', async () => {
+  const f = frontend(async url => url.includes('/programma')
+    ? { ok: true, json: async () => ({ attivo: true, completamenti: {}, fasce: [{
+      id: 'f1', titolo: 'Accoglienza', fine: '2020-01-01T10:00:00Z',
+      personalizzazioni: [{ ruolo: 'C1', nessunaAttivita: true }]
+    }] }) }
+    : { ok: true, json: async () => ({ ruoli: [{ nome: 'C1', gruppo: 'Corridoio' }] }) });
+  f.run("S.role = 'Admin'; S.token = 'test-token'");
+  await f.run('showAdmin()');
+  assert.match(f.element('#tabContent').innerHTML, /Nessuna attività/);
+  assert.doesNotMatch(f.element('#tabContent').innerHTML, /In Ritardo/);
 });
