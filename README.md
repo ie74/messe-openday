@@ -22,9 +22,13 @@ nelle variabili d'ambiente locali o nelle impostazioni del progetto Vercel.
 Non salvare credenziali nel repository.
 
 Eseguire `npm test` per le verifiche automatiche.
-Senza server o credenziali, l'app mostra l'ultimo programma salvato sul dispositivo,
-se presente. I completamenti richiedono una conferma del server; non vengono
-accodati per l'invio offline.
+La timeline dello staff mostra fasi e orari solo quando il server conferma che
+l'evento è attivo. Se l'evento è in pausa, la rete manca o una richiesta fallisce,
+mostra un avviso arancione e nasconde il programma, anche se il dispositivo ne ha
+una copia salvata. Lo staff può riprovare subito; il controllo automatico avviene
+ogni 2 minuti. I completamenti richiedono un evento attivo e la conferma del server;
+non vengono accodati per l'invio offline. Il pannello admin conserva la possibilità
+di consultare l'ultima copia locale durante un'interruzione di rete.
 
 ## Creare un ruolo
 

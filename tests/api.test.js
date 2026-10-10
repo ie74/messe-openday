@@ -116,6 +116,16 @@ test('completamento idempotente e annullamento', async () => {
   assert.deepEqual(undone.data.completamenti.C1, []);
 });
 
+test('lo staff non può completare tappe mentre l’evento è in pausa', async () => {
+  const f = fixture();
+  f.docs.set('programma', { ...f.docs.get('programma'), attivo: false });
+  const risposta = await f.call(f.admin,
+    { azione: 'segna_completato', fasciaId: 'f1', completato: true },
+    { 'x-badge': '1111-1111-1111-1111' });
+  assert.equal(risposta.code, 409);
+  assert.deepEqual(f.docs.get('programma').completamenti, {});
+});
+
 test('due squadre completano simultaneamente senza perdere dati', async () => {
   const f = fixture();
   const responses = await Promise.all(['C1', 'C2'].map(ruolo => f.call(f.admin,

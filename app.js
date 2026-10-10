@@ -81,10 +81,6 @@ function avvisa(testo, male = false) {
 const attesa = (b, testo = 'Attendo...') => { if (b) { b.disabled = true; b.dataset.t = b.textContent; b.textContent = testo; } };
 const pronto = b => { if (b) { b.disabled = false; if (b.dataset.t) b.textContent = b.dataset.t; } };
 
-const scheletro = `<ol class="tl" id="tl">${[0, 1, 2].map(() =>
-  `<li class="it sk"><div class="tm"><span class="br s2"></span></div><div class="rail"></div>
-   <div class="nd"><span class="br s6"></span><span class="br s4"></span></div></li>`).join('')}</ol>`;
-
 /* ---------- Ambiente e Stato ---------- */
 const q = new URLSearchParams(location.search), ua = navigator.userAgent;
 const ipad = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
@@ -106,7 +102,8 @@ const S = {
   tabAdmin: 'timeline',
   fasiRegiaAperte: new Set(),
   ultimaSync: null,
-  datiOffline: false
+  datiOffline: false,
+  erroreTimeline: null
 };
 
 let installEvt = null;
@@ -246,7 +243,7 @@ const avviaRefresh = (periodo, aggiorna) => {
 const svuotaCacheProgramma = () => {
   for (const key of ['programma', 'completamenti', 'evento_attivo']) store.del(key);
   Fasce = []; Completamenti = {}; EventoAttivo = false;
-  S.ultimaSync = null; S.datiOffline = false; S.fasiRegiaAperte.clear();
+  S.ultimaSync = null; S.datiOffline = false; S.erroreTimeline = null; S.fasiRegiaAperte.clear();
 };
 
 // Ricostruisce le strutture derivate da RuoliDB (o CFG.GROUPS come fallback)
@@ -558,12 +555,17 @@ async function carica() {
     if (!r.ok) throw new Error('Il server ha risposto ' + r.status + '.');
     const d = await r.json();
     if (`${S.role}|${S.badge}|${S.token}` !== identita || S.mutationVersion !== versione) return { stale: true };
+    if (!d || typeof d.attivo !== 'boolean' || !Array.isArray(d.fasce)
+      || !d.completamenti || typeof d.completamenti !== 'object' || Array.isArray(d.completamenti)) {
+      throw new Error('Il programma ricevuto dal server non è valido.');
+    }
     store.set('programma', d);
-    Fasce = d.fasce || [];
-    EventoAttivo = !!d.attivo;
-    Completamenti = d.completamenti || {};
+    Fasce = d.fasce;
+    EventoAttivo = d.attivo;
+    Completamenti = d.completamenti;
     S.ultimaSync = new Date();
     S.datiOffline = false;
+    S.erroreTimeline = null;
     store.set('completamenti', Completamenti);
     return {};
   } catch (x) {
@@ -585,7 +587,7 @@ async function carica() {
 let salvataggioTappa = false;
 async function toggleCompletato(fasciaId) {
   const r = S.role;
-  if (!r || salvataggioTappa) return;
+  if (!r || salvataggioTappa || !EventoAttivo || S.datiOffline || S.erroreTimeline) return;
   const fase = Fasce.find(f => f.id === fasciaId);
   if (!fase || (fase.mia || personalizzazionePer(fase, r, gruppo()))?.nessunaAttivita === true) return;
   const list = Completamenti[r] || [];
@@ -611,12 +613,14 @@ async function toggleCompletato(fasciaId) {
     if (programma) store.set('programma', { ...programma, completamenti: Completamenti });
     avvisa(fatto ? 'Tappa segnata come non completata' : 'Tappa completata!');
   } catch (e) {
-    if (S.role === r) Completamenti[r] = list;
-    avvisa('Tappa non salvata: ' + e.message, true);
+    if (S.role === r) {
+      Completamenti[r] = list;
+      S.erroreTimeline = 'Tappa non salvata: ' + e.message;
+    }
   } finally {
     salvataggioTappa = false;
     S.mutationVersion++;
-    if ($('#tl')) renderList(false);
+    if ($('#tl')) renderStatoTimeline({}, false);
   }
 }
 
@@ -632,7 +636,7 @@ function getStatoOrario(inizio, fine, now) {
 
 let ultimoHtml = '';
 function renderList(scroll) {
-  if (inCorso) return;
+  if (inCorso || !EventoAttivo || S.datiOffline || S.erroreTimeline) return;
   const now = new Date();
   const ord = [...Fasce].sort((a, b) => new Date(a.inizio) - new Date(b.inizio));
   const completatiRole = Completamenti[S.role] || [];
@@ -711,13 +715,35 @@ function renderList(scroll) {
 }
 
 function renderBannerTimeline(d) {
-  let bHtml = !EventoAttivo
-    ? `<div class="banner warn"><b>EVENTO IN ATTESA DI AVVIO</b><br>Il coordinatore non ha ancora attivato l'evento. Gli orari sottostanti sono indicativi.</div>`
-    : `<div class="banner active"><b>EVENTO ATTIVO</b> - Segui gli orari e segna le tappe man mano che le completi.</div>`;
-  if (d.offline) bHtml += `<div class="banner bad">${esc(d.errore)} ${d.senzaCache ? 'Nessun programma disponibile offline.' : 'Stiamo vedendo l\'ultimo programma salvato.'}<button class="btn mini" id="retry">Riprova</button></div>`;
-  else if (d.demo) bHtml += '<div class="banner">Dati in modalità offline/demo.</div>';
-  $('#banner').innerHTML = bHtml;
+  let titolo, messaggio;
+  if (d.offline || d.demo || S.datiOffline) {
+    titolo = 'STATO EVENTO NON DISPONIBILE';
+    messaggio = d.errore || 'Non riusciamo a verificare lo stato dell’evento con il server.';
+  } else if (S.erroreTimeline) {
+    titolo = 'ERRORE DI AGGIORNAMENTO';
+    messaggio = S.erroreTimeline;
+  } else if (!EventoAttivo) {
+    titolo = 'EVENTO IN PAUSA';
+    messaggio = 'Il coordinatore non ha ancora attivato l’evento. Il programma comparirà quando inizierà.';
+  }
+  $('#banner').innerHTML = titolo
+    ? `<div class="banner warn staff-status" role="status"><span><b>${titolo}</b><br>${esc(messaggio)}</span><button class="btn mini" id="retry">Riprova</button></div>`
+    : '<div class="banner active"><b>EVENTO ATTIVO</b> - Segui gli orari e segna le tappe man mano che le completi.</div>';
   $('#retry')?.addEventListener('click', showTimeline);
+}
+
+function renderStatoTimeline(d, scroll) {
+  renderBannerTimeline(d);
+  const lista = $('#tl');
+  const visibile = EventoAttivo && !S.datiOffline && !S.erroreTimeline && !d.offline && !d.demo;
+  lista.hidden = !visibile;
+  if (!visibile) {
+    lista.innerHTML = '';
+    lista.onclick = null;
+    ultimoHtml = '';
+    return;
+  }
+  renderList(scroll);
 }
 
 const batto = () => {
@@ -885,8 +911,8 @@ async function showTimeline() {
   inCorso = true;
   screen.innerHTML = `<header class="top"><b id="clock"></b><button class="chip" id="chg">${esc(S.role || 'Ruolo')}, cambia</button></header>
     <div class="wrap">
-      <div id="banner"></div>
-      ${scheletro}
+      <div id="banner"><div class="banner warn staff-status" role="status">Verifica dello stato dell’evento...</div></div>
+      <ol class="tl" id="tl" hidden></ol>
     </div>`;
 
   $('#chg').onclick = showRoles;
@@ -898,14 +924,12 @@ async function showTimeline() {
   if (d.revocato || d.stale || S.vista !== vista) return;
   inCorso = false;
 
-  renderBannerTimeline(d);
-  renderList(true);
+  renderStatoTimeline(d, true);
   avviaRefresh(120000, async valida => {
     if (salvataggioTappa) return;
     const aggiornati = await carica();
     if (!valida() || aggiornati.revocato || aggiornati.stale) return;
-    renderBannerTimeline(aggiornati);
-    renderList(false);
+    renderStatoTimeline(aggiornati, false);
   });
 }
 
