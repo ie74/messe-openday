@@ -253,6 +253,7 @@ label {
 
 input[type=password],
 input[type=text],
+input:not([type]),
 input[type=datetime-local],
 input[type=number],
 select,
@@ -777,6 +778,34 @@ input:checked + .slider:before {
 .mod, .agg {
     display: grid;
     gap: 4px;
+}
+
+.new-assignments {
+    margin: 20px 0;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+}
+
+.new-assignments h4 { margin-bottom: 6px; }
+
+.new-assignment {
+    margin: 14px 0;
+    padding: 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--panel-subtle);
+}
+
+.assignment-main {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+
+.new-assignment [data-rimuovi-assegnazione] { margin-top: 12px; }
+
+@media (max-width: 600px) {
+    .assignment-main { grid-template-columns: 1fr; }
 }
 
 .agg {

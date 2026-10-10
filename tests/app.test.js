@@ -70,3 +70,23 @@ test('un server indisponibile senza cache non produce un programma di esempio', 
   assert.equal(result.senzaCache, true);
   assert.equal(f.run('Fasce.length'), 0);
 });
+
+test('una nuova fase raccoglie insieme le istruzioni di più ruoli e rifiuta duplicati', () => {
+  const f = frontend();
+  assert.match(f.run('nuovaAssegnazione()'), /name="istruzioniSpostamento"/);
+  const righe = `[{ ruolo: 'Aula', tappa: 'Atrio', istruzioniSpostamento: 'Scala nord', note: '' },
+    { ruolo: 'C1', tappa: 'Laboratorio 2', istruzioniSpostamento: 'Prendi la scala sud', note: 'Porta i badge' }]`;
+  const form = dati => `({ querySelectorAll: () => ${dati}.map(valori => ({
+    querySelector: selettore => ({ value: valori[selettore.slice(7, -2)] ?? '' })
+  })) })`;
+  const personalizzazioni = JSON.parse(JSON.stringify(f.run(`leggiNuoveAssegnazioni(${form(righe)})`)));
+  assert.equal(personalizzazioni.length, 2);
+  assert.deepEqual(personalizzazioni.map(({ ruolo, tappa, istruzioniSpostamento, note }) =>
+    ({ ruolo, tappa, istruzioniSpostamento, note })), [
+    { ruolo: 'Aula', tappa: 'Atrio', istruzioniSpostamento: 'Scala nord', note: '' },
+    { ruolo: 'C1', tappa: 'Laboratorio 2', istruzioniSpostamento: 'Prendi la scala sud', note: 'Porta i badge' }
+  ]);
+  assert.ok(personalizzazioni.every(p => p.id.startsWith('p')));
+  assert.throws(() => f.run(`leggiNuoveAssegnazioni(${form("[{ ruolo: 'C1' }, { ruolo: 'C1' }]")})`),
+    /ha già una riga/);
+});

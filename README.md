@@ -40,6 +40,15 @@ maiuscole diverse, vengono rifiutati. Il nome Admin è riservato.
 La creazione è transazionale e conserva i ruoli e i badge già presenti.
 L'editor JSON della lista completa rimane nella sezione **Gestione avanzata**.
 
+## Creare una fase con istruzioni
+
+Nel pannello admin, aprire **Fasi e istruzioni**. Il modulo **Nuova Fase**
+permette di aggiungere più assegnazioni prima di creare la fase: per ogni riga
+si sceglie un ruolo o un gruppo e si possono indicare luogo, istruzioni per lo
+spostamento e note. Si possono rimuovere le righe non necessarie. La fase e le
+sue assegnazioni vengono aggiunte insieme al programma; per renderle disponibili
+allo staff occorre poi premere **Salva modifiche sul server**.
+
 ## Rimozione del sistema di notifiche
 
 L'app non richiede permessi di notifica e non invia push. Sono stati rimossi

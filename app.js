@@ -673,7 +673,7 @@ async function showAdmin() {
       <div class="tabs">
         <button class="tab-btn ${S.tabAdmin === 'dashboard' ? 'active' : ''}" id="tabDash">Status Squadre</button>
         <button class="tab-btn ${S.tabAdmin === 'timeline' ? 'active' : ''}" id="tabTl">Timeline Globale</button>
-        <button class="tab-btn ${S.tabAdmin === 'modifica' ? 'active' : ''}" id="tabMod">Modifica Fasi</button>
+        <button class="tab-btn ${S.tabAdmin === 'modifica' ? 'active' : ''}" id="tabMod">Fasi e istruzioni</button>
         <button class="tab-btn ${S.tabAdmin === 'ruoli' ? 'active' : ''}" id="tabRuoli">Ruoli e badge</button>
       </div>
 
@@ -793,6 +793,12 @@ async function showAdmin() {
             <div><label>Spostamento (min)</label><input type="number" name="durataSpostamento" value="10" min="0" required></div>
           </div>
           <label>Nota generale per tutti</label><input name="nota" autocomplete="off" placeholder="es. Badge obbligatorio">
+          <div class="new-assignments">
+            <h4>Istruzioni per ruoli e gruppi</h4>
+            <p class="mut">Aggiungi qui le assegnazioni della fase. Puoi dare istruzioni a un gruppo intero o a un singolo ruolo.</p>
+            <div id="nuoveAssegnazioni"></div>
+            <button class="btn ghost" type="button" id="aggiungiAssegnazione">Aggiungi ruolo o gruppo</button>
+          </div>
           <button class="btn">Aggiungi Fase</button>
         </form>
 
@@ -812,6 +818,13 @@ async function showAdmin() {
       `;
 
       $('#ff [name=inizio]').value = perInput(calcolaProssimoInizio());
+      $('#aggiungiAssegnazione').onclick = () => {
+        $('#nuoveAssegnazioni').insertAdjacentHTML('beforeend', nuovaAssegnazione());
+      };
+      $('#nuoveAssegnazioni').onclick = e => {
+        const btn = e.target.closest('[data-rimuovi-assegnazione]');
+        if (btn) btn.closest('.new-assignment').remove();
+      };
       $('#ff').onsubmit = e => {
         e.preventDefault();
         const d = new FormData(e.target);
@@ -819,13 +832,17 @@ async function showAdmin() {
         if (!titolo) return avvisa('Inserisci un titolo per la fase', true);
         const inizio = iso(d.get('inizio'));
         if (!inizio) return avvisa('Seleziona un orario di inizio valido', true);
+        let personalizzazioni;
+        try { personalizzazioni = leggiNuoveAssegnazioni(e.target); }
+        catch (errore) { return avvisa(errore.message, true); }
         Fasce.push({
           id: 'f' + uid(), titolo, inizio,
           fine: d.get('fine') ? iso(d.get('fine')) : null,
           durataSpostamento: parseInt(d.get('durataSpostamento') || 0, 10),
-          note: (d.get('nota') || '').trim(), personalizzazioni: []
+          note: (d.get('nota') || '').trim(), personalizzazioni
         });
         e.target.reset();
+        $('#nuoveAssegnazioni').replaceChildren();
         $('#ff [name=inizio]').value = perInput(calcolaProssimoInizio());
         disegnaFasiEditor(); segnaSporco();
         avvisa('Fase aggiunta');
@@ -945,6 +962,33 @@ const segnaSporco = () => {
   sporco = true;
   const d = $('#dirty'); if (d) d.hidden = false;
 };
+
+const nuovaAssegnazione = () => `<div class="new-assignment">
+  <div class="assignment-main">
+    <div><label>Ruolo o gruppo</label><select name="ruolo" required>
+      <option value="">Seleziona un ruolo o gruppo</option>${optSquadra('')}
+    </select></div>
+    <div><label>Luogo personale</label><input name="tappa" placeholder="es. Laboratorio 2" autocomplete="off"></div>
+  </div>
+  <label>Istruzioni per lo spostamento</label><textarea name="istruzioniSpostamento" rows="2" placeholder="es. Prendi le scale B e vai al 1° piano"></textarea>
+  <label>Note personali per questo team</label><input name="note" placeholder="es. Controllare i badge prima di entrare" autocomplete="off">
+  <button class="btn ghost" type="button" data-rimuovi-assegnazione>Rimuovi assegnazione</button>
+</div>`;
+
+function leggiNuoveAssegnazioni(form) {
+  const visti = new Set();
+  return [...form.querySelectorAll('.new-assignment')].map(riga => {
+    const valore = nome => riga.querySelector(`[name="${nome}"]`).value.trim();
+    const ruolo = valore('ruolo');
+    if (!ruolo) throw new Error('Seleziona un ruolo o un gruppo per ogni assegnazione.');
+    if (visti.has(ruolo)) throw new Error(`"${ruolo}" ha già una riga in questa fase.`);
+    visti.add(ruolo);
+    return {
+      id: 'p' + uid(), ruolo, tappa: valore('tappa'),
+      istruzioniSpostamento: valore('istruzioniSpostamento'), note: valore('note')
+    };
+  });
+}
 
 const testataFase = f => `<div class="riga"><div>
     <b>${esc(f.titolo)}</b>
