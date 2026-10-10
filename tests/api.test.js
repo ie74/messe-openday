@@ -43,8 +43,10 @@ function fixture() {
   const lib = load('api/_lib.js', name => name === 'firebase-admin'
     ? { credential: { cert: () => ({}) }, initializeApp: () => ({ firestore: () => db }) }
     : require(name));
-  const admin = load('api/admin.js', name => name === './_lib' ? lib : require(name));
-  const programma = load('api/programma.js', name => name === './_lib' ? lib : require(name));
+  const fasi = load('api/_fasi.js', require);
+  const dipendenza = name => name === './_lib' ? lib : name === './_fasi' ? fasi : require(name);
+  const admin = load('api/admin.js', dipendenza);
+  const programma = load('api/programma.js', dipendenza);
   const badge = load('api/badge.js', name => name === './_lib' ? lib : require(name));
   async function call(handler, body = {}, headers = {}, method = 'POST', query = {}) {
     const response = { code: 200, status(code) { this.code = code; return this; },
@@ -75,6 +77,25 @@ test('badge identifica il ruolo; query e corpo non possono impersonarne un altro
   assert.deepEqual(result.data.completamenti, { C1: ['f1'] });
   const view = await f.call(f.programma, {}, { 'x-badge': '1111-1111-1111-1111' }, 'GET', { ruolo: 'C2' });
   assert.equal(view.data.ruolo, 'C1');
+});
+
+test('ruolo senza attività vede la fase ma non può completarla, anche via API', async () => {
+  const f = fixture();
+  f.docs.set('programma', { attivo: true, completamenti: {}, fasce: [
+    { id: 'f1', titolo: 'Accoglienza', personalizzazioni: [
+      { ruolo: 'Corridoio', nessunaAttivita: true },
+      { ruolo: 'C2', tappa: 'Atrio', nessunaAttivita: false }
+    ] }
+  ] });
+  const c1 = { 'x-badge': '1111-1111-1111-1111' };
+  const c2 = { 'x-badge': '2222-2222-2222-2222' };
+  const vista = await f.call(f.programma, {}, c1, 'GET');
+  assert.equal(vista.data.fasce.length, 1);
+  assert.equal(vista.data.fasce[0].mia.nessunaAttivita, true);
+  assert.equal((await f.call(f.admin, { azione: 'segna_completato', fasciaId: 'f1', completato: true }, c1)).code, 403);
+  assert.equal((await f.call(f.admin, { azione: 'segna_completato', ruolo: 'C1', fasciaId: 'f1', completato: true }, f.auth)).code, 403);
+  assert.equal((await f.call(f.admin, { azione: 'segna_completato', fasciaId: 'f1', completato: true }, c2)).code, 200);
+  assert.deepEqual(f.docs.get('programma').completamenti, { C2: ['f1'] });
 });
 
 test('badge revocato, tappa inesistente e input incompleto vengono rifiutati', async () => {

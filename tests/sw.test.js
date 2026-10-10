@@ -27,7 +27,7 @@ test('upgrade mantiene PWA, rimuove solo cache proprie e disiscrive la vecchia p
   let done;
   w.handlers.activate({ waitUntil: p => { done = p; } });
   await done;
-  assert.deepEqual(w.removed, ['evento-v1', 'openday-v1']);
+  assert.deepEqual(w.removed, ['evento-v1', 'openday-v1', 'openday-v2']);
   assert.equal(w.unsubscribed(), true);
 });
 

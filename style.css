@@ -802,6 +802,18 @@ input:checked + .slider:before {
     gap: 10px;
 }
 
+.new-assignment > .assignment-main { grid-template-columns: 1fr; }
+.assignment-details { margin-top: 8px; }
+.assignment-details[hidden] { display: none; }
+.inactive-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    text-transform: none;
+    font-size: 0.84rem;
+    letter-spacing: normal;
+}
+
 .new-assignment [data-rimuovi-assegnazione] { margin-top: 12px; }
 
 @media (max-width: 600px) {

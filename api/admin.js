@@ -1,5 +1,6 @@
 const { rilasciaToken, verificaToken, confronta, segreto, troppo, nota, azzera, scrivi, aggiorna,
   leggiRuoli, trovaRuolo, generaCodice } = require('./_lib');
+const { senzaAttivita } = require('./_fasi');
 
 const bearer = req => String(req.headers.authorization || '').replace(/^Bearer /, '');
 
@@ -26,17 +27,23 @@ module.exports = async (req, res) => {
     const { fasciaId, completato } = req.body || {};
     if (typeof fasciaId !== 'string' || !fasciaId || typeof completato !== 'boolean')
       return res.status(400).json({ errore: 'Dati mancanti o non validi.' });
-    let ruolo = '';
+    let ruolo = '', gruppo = '';
     try {
-      if (admin && req.body.ruolo) ruolo = String(req.body.ruolo);
+      if (admin && req.body.ruolo) {
+        ruolo = String(req.body.ruolo);
+        gruppo = (await leggiRuoli()).find(r => r.nome === ruolo)?.gruppo || '';
+      }
       else {
         const r = await trovaRuolo(req.headers['x-badge']);
         if (!r) return res.status(401).json({ errore: 'Badge non valido o revocato.' });
-        ruolo = r.nome;
+        ruolo = r.nome; gruppo = r.gruppo || '';
       }
       const prog = await aggiorna('programma', corrente => {
-        if (!(corrente.fasce || corrente.items || []).some(f => f.id === fasciaId))
+        const fase = (corrente.fasce || corrente.items || []).find(f => f.id === fasciaId);
+        if (!fase)
           throw Object.assign(new Error('La tappa non esiste più nel programma.'), { status: 400 });
+        if (senzaAttivita(fase, ruolo, gruppo))
+          throw Object.assign(new Error('Questo ruolo non ha attività da completare in questa fase.'), { status: 403 });
         const completamenti = { ...(corrente.completamenti || {}) };
         const lista = new Set(completamenti[ruolo] || []);
         if (completato) lista.add(fasciaId); else lista.delete(fasciaId);
