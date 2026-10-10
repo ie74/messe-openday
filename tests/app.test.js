@@ -51,6 +51,39 @@ test('gli header usano il badge o il token admin e gli URL badge codificano il c
   assert.equal(new URL(f.run("urlBadge('a&b')")).searchParams.get('b'), 'a&b');
 });
 
+test('PDF badge include tutti i ruoli, i codici e una seconda pagina dopo otto riquadri', () => {
+  const f = frontend();
+  f.run(`window.qrPayloads = [];
+    window.qrcode = () => ({
+      addData(value) { window.qrPayloads.push(value); }, make() {},
+      getModuleCount() { return 21; }, isDark() { return false; }
+    });
+    window.jspdf = { jsPDF: class {
+      constructor() {
+        this.pages = 1; this.rects = []; this.texts = [];
+        this.internal = { pageSize: { getWidth: () => 210, getHeight: () => 297 } };
+        window.lastPdf = this;
+      }
+      addPage() { this.pages++; }
+      setFont() {} setFontSize() {} setTextColor() {} setDrawColor() {}
+      setLineWidth() {} setLineDashPattern() {} setFillColor() {}
+      rect(...args) { this.rects.push(args); }
+      text(value) { this.texts.push(value); }
+      splitTextToSize(value) { return [value]; }
+      getTextWidth(value) { return value.length; }
+    } };`);
+  f.run(`creaPdfBadge(Array.from({ length: 9 }, (_, i) => ({
+    nome: 'Ruolo ' + (i + 1), badge: 'codice-' + (i + 1)
+  })))`);
+  assert.equal(f.run('window.lastPdf.pages'), 2);
+  assert.equal(f.run('window.lastPdf.rects.length'), 9);
+  assert.equal(f.run('window.qrPayloads.length'), 9);
+  assert.equal(new URL(f.run('window.qrPayloads[8]')).searchParams.get('b'), 'codice-9');
+  assert.ok(f.run("window.lastPdf.texts.flat().includes('Ruolo 9')"));
+  assert.ok(f.run("window.lastPdf.texts.includes('codice-9')"));
+  assert.throws(() => f.run("creaPdfBadge([{ nome: 'Senza codice' }])"), /codice badge/);
+});
+
 test('un errore HTTP ripristina la tappa senza annunciare un successo o salvarlo offline', async () => {
   const f = frontend({ ok: false, json: async () => ({ errore: 'Errore server' }) }, { completamenti: { C1: [] } });
   await f.run("toggleCompletato('f1')");
