@@ -103,7 +103,10 @@ const S = {
   operazioneAdmin: false,
   mutationVersion: 0,
   vista: 0,
-  tabAdmin: 'dashboard'
+  tabAdmin: 'timeline',
+  fasiRegiaAperte: new Set(),
+  ultimaSync: null,
+  datiOffline: false
 };
 
 let installEvt = null;
@@ -168,6 +171,7 @@ const avviaRefresh = (periodo, aggiorna) => {
 const svuotaCacheProgramma = () => {
   for (const key of ['programma', 'completamenti', 'evento_attivo']) store.del(key);
   Fasce = []; Completamenti = {}; EventoAttivo = false;
+  S.ultimaSync = null; S.datiOffline = false; S.fasiRegiaAperte.clear();
 };
 
 // Ricostruisce le strutture derivate da RuoliDB (o CFG.GROUPS come fallback)
@@ -455,6 +459,7 @@ async function carica() {
     Fasce = demoFasce();
     EventoAttivo = store.get('evento_attivo', true);
     Completamenti = store.get('completamenti', {});
+    S.datiOffline = true;
     return { demo: true };
   }
   const identita = `${S.role}|${S.badge}|${S.token}`;
@@ -482,10 +487,13 @@ async function carica() {
     Fasce = d.fasce || [];
     EventoAttivo = !!d.attivo;
     Completamenti = d.completamenti || {};
+    S.ultimaSync = new Date();
+    S.datiOffline = false;
     store.set('completamenti', Completamenti);
     return {};
   } catch (x) {
     if (`${S.role}|${S.badge}|${S.token}` !== identita || S.mutationVersion !== versione) return { stale: true };
+    S.datiOffline = true;
     const c = store.get('programma');
     if (c) {
       Fasce = c.fasce || [];
@@ -644,6 +652,157 @@ const batto = () => {
   if (S.role && S.role !== CFG.ADMIN) renderList(false);
 };
 
+/* ---------- Regia admin: orari previsti e conferme ricevute ---------- */
+const SOGLIA_RITARDO = 5 * 60000;
+
+function preparaRegia(fasce, ruoli, completamenti, ora, eventoAttivo) {
+  const adesso = new Date(ora).getTime();
+  const ordinate = [...fasce].sort((a, b) =>
+    (dataOk(a.inizio) ? new Date(a.inizio).getTime() : Infinity)
+    - (dataOk(b.inizio) ? new Date(b.inizio).getTime() : Infinity));
+  const allerte = [];
+
+  const fasi = ordinate.map((fase, indice) => {
+    const inizio = dataOk(fase.inizio) ? new Date(fase.inizio).getTime() : NaN;
+    const fineValida = dataOk(fase.fine) && new Date(fase.fine).getTime() > inizio;
+    const fine = fineValida ? new Date(fase.fine).getTime() : NaN;
+    const prossimoInizio = ordinate.slice(indice + 1)
+      .map(f => dataOk(f.inizio) ? new Date(f.inizio).getTime() : NaN)
+      .find(t => Number.isFinite(t) && t > inizio);
+    const fineGiorno = Number.isFinite(inizio)
+      ? new Date(new Date(inizio).setHours(24, 0, 0, 0)).getTime() : NaN;
+    const limitePrevisto = fineValida ? fine : Math.min(prossimoInizio ?? Infinity, fineGiorno);
+    const tempo = !Number.isFinite(inizio) ? 'senza-orario'
+      : adesso < inizio ? 'futura'
+      : adesso < limitePrevisto ? 'ora' : 'passata';
+    const conteggi = { previsti: 0, completati: 0, attesa: 0, ritardo: 0, inattivi: 0 };
+
+    const righe = ruoli.filter(r => r?.nome).map(ruolo => {
+      const assegnazione = personalizzazionePer(fase, ruolo.nome, ruolo.gruppo || '');
+      const inattivo = assegnazione?.nessunaAttivita === true;
+      const completato = (completamenti[ruolo.nome] || []).includes(fase.id);
+      const minuti = fineValida ? Math.max(0, Math.floor((adesso - fine) / 60000)) : 0;
+      let stato;
+      if (inattivo) { stato = 'inattivo'; conteggi.inattivi++; }
+      else {
+        conteggi.previsti++;
+        if (completato) { stato = 'completato'; conteggi.completati++; }
+        else if (!eventoAttivo) stato = 'pausa';
+        else if (fineValida && adesso >= fine + SOGLIA_RITARDO) {
+          stato = 'ritardo'; conteggi.ritardo++;
+        } else if (fineValida && adesso >= fine) {
+          stato = 'attesa'; conteggi.attesa++;
+        } else if (tempo === 'ora') stato = 'previsto-ora';
+        else if (tempo === 'futura') stato = 'futuro';
+        else stato = 'senza-conferma';
+      }
+      const riga = { ruolo: ruolo.nome, gruppo: ruolo.gruppo || '', assegnazione, stato, minuti };
+      if (stato === 'attesa' || stato === 'ritardo')
+        allerte.push({ fase, riga, minuti, grave: stato === 'ritardo' });
+      return riga;
+    });
+    return { fase, inizio, fine, fineValida, tempo, conteggi, righe };
+  });
+
+  allerte.sort((a, b) => b.minuti - a.minuti);
+  return {
+    fasi, allerte,
+    correnti: fasi.filter(f => f.tempo === 'ora'),
+    prossima: fasi.find(f => f.tempo === 'futura') || null
+  };
+}
+
+const statoRigaRegia = riga => ({
+  inattivo: 'Nessuna attività', completato: 'Completato', pausa: 'Evento in pausa',
+  ritardo: `Conferma mancante da ${riga.minuti} min`,
+  attesa: 'Fine appena passata', 'previsto-ora': 'Previsto ora',
+  futuro: 'In programma', 'senza-conferma': 'Fine non definita',
+})[riga.stato] || 'Orario non definito';
+
+function renderRegia(contenitore) {
+  const quadro = preparaRegia(Fasce, RuoliDB, Completamenti, new Date(), EventoAttivo);
+  const sync = S.datiOffline
+    ? `Dati locali${S.ultimaSync ? ` · ultimo contatto ${S.ultimaSync.toLocaleTimeString('it-IT')}` : ' · nessuna connessione al server'}`
+    : `Aggiornato dal server alle ${S.ultimaSync?.toLocaleTimeString('it-IT') || '--:--'}`;
+  const corrente = quadro.correnti.length
+    ? quadro.correnti.map(({ fase, conteggi }) => `<div class="regia-now-item">
+        <b>${esc(fase.titolo)}</b>
+        <span>${fmt(fase.inizio)}${dataOk(fase.fine) ? `–${fmt(fase.fine)}` : ' · fine non definita'}</span>
+        <small>${conteggi.completati}/${conteggi.previsti} confermati</small>
+      </div>`).join('')
+    : '<p class="mut">Nessuna fase prevista in questo momento.</p>';
+  const prossima = quadro.prossima
+    ? `Prossima: <b>${esc(quadro.prossima.fase.titolo)}</b> alle ${fmt(quadro.prossima.fase.inizio)}`
+    : 'Nessuna fase successiva in programma.';
+  const allerte = !EventoAttivo
+    ? '<p class="mut">Il monitoraggio delle conferme è sospeso mentre l’evento è in pausa.</p>'
+    : quadro.allerte.length
+      ? quadro.allerte.map(({ fase, riga, minuti, grave }) => `<button type="button" class="regia-alert ${grave ? 'grave' : ''}" data-apri-fase="${esc(fase.id)}">
+          <span class="regia-alert-time">${minuti} min</span>
+          <span><b>${esc(riga.ruolo)}</b><small>${esc(fase.titolo)} · fine prevista ${fmt(fase.fine)}${riga.assegnazione?.tappa ? ` · ${esc(riga.assegnazione.tappa)}` : ''}</small></span>
+          <span class="regia-alert-label">${grave ? 'Da verificare' : 'Conferma attesa'}</span>
+        </button>`).join('')
+      : '<p class="mut">Nessuna conferma scaduta.</p>';
+  const fasi = quadro.fasi.map(({ fase, fineValida, tempo, conteggi, righe }) => {
+    const stato = tempo === 'ora' ? 'Prevista ora' : tempo === 'futura' ? 'In programma'
+      : !righe.length ? 'Ruoli non disponibili'
+      : !conteggi.previsti ? 'Nessuna attività'
+      : conteggi.ritardo ? `${conteggi.ritardo} da verificare`
+      : conteggi.attesa ? `${conteggi.attesa} conferme attese`
+      : conteggi.previsti && conteggi.completati === conteggi.previsti ? 'Conferme complete'
+      : !EventoAttivo ? 'Evento in pausa'
+      : !fineValida ? 'Fine non definita' : 'Conferme mancanti';
+    return `<details class="regia-phase ${tempo}" data-fase="${esc(fase.id)}" ${S.fasiRegiaAperte.has(fase.id) ? 'open' : ''}>
+      <summary>
+        <span class="regia-phase-time">${fmt(fase.inizio)}${fineValida ? `<small>${fmt(fase.fine)}</small>` : ''}</span>
+        <span class="regia-phase-title"><b>${esc(fase.titolo)}</b><small>${esc(stato)}</small></span>
+        <span class="regia-phase-count">${conteggi.completati}/${conteggi.previsti} confermati</span>
+      </summary>
+      <div class="regia-phase-body">
+        ${fase.note ? `<p class="mut">Nota generale: ${esc(fase.note)}</p>` : ''}
+        ${!fineValida ? '<p class="mut">Fine non definita: non si calcola il ritardo per questa fase.</p>' : ''}
+        ${righe.length ? `<ul class="regia-role-list">${righe.map(riga => `<li>
+          <div><b>${esc(riga.ruolo)}</b>${riga.gruppo && riga.gruppo !== riga.ruolo ? `<small>${esc(riga.gruppo)}</small>` : ''}</div>
+          <div><span>${riga.stato === 'inattivo' ? 'Nessun luogo richiesto' : `Luogo previsto: ${esc(riga.assegnazione?.tappa || 'non specificato')}`}</span>
+            ${riga.stato !== 'inattivo' && riga.assegnazione?.istruzioniSpostamento ? `<small>Spostamento: ${esc(riga.assegnazione.istruzioniSpostamento)}</small>` : ''}
+            ${riga.stato !== 'inattivo' && riga.assegnazione?.note ? `<small>${esc(riga.assegnazione.note)}</small>` : ''}</div>
+          <span class="regia-state ${riga.stato}">${esc(statoRigaRegia(riga))}</span>
+        </li>`).join('')}</ul>` : '<p class="mut">Nessun ruolo disponibile: controlla la sezione Ruoli e badge.</p>'}
+      </div>
+    </details>`;
+  }).join('') || '<p class="mut">Nessuna fase in programma.</p>';
+
+  contenitore.innerHTML = `<div class="regia">
+    <header class="regia-heading"><div><span class="regia-eyebrow">CENTRALE OPERATIVA</span><h2>Regia della serata</h2></div><small class="regia-sync">${esc(sync)}</small></header>
+    ${sporco ? '<p class="banner warn">Sono presenti modifiche al programma non ancora salvate sul server.</p>' : ''}
+    ${!RuoliDB.length ? '<p class="banner warn">Elenco ruoli non disponibile: non è possibile calcolare le conferme. Controlla Ruoli e badge o la connessione.</p>' : ''}
+    <div class="regia-top">
+      <section class="regia-panel" aria-labelledby="regia-now-title"><h3 id="regia-now-title">Previsto ora</h3>${corrente}<p class="regia-next">${prossima}</p></section>
+      <section class="regia-panel" aria-labelledby="regia-alert-title"><h3 id="regia-alert-title">Da seguire <span class="regia-count">${quadro.allerte.length}</span></h3><div class="regia-alerts">${allerte}</div></section>
+    </div>
+    <section class="regia-program" aria-labelledby="regia-program-title"><h3 id="regia-program-title">Programma e ruoli</h3><p class="mut">Apri una fase per vedere chi ha confermato. Gli orari indicano il programma previsto, non la posizione reale dei ruoli.</p><div class="regia-phases">${fasi}</div></section>
+  </div>`;
+  contenitore.onclick = e => {
+    const pulsante = e.target.closest('[data-apri-fase]');
+    if (pulsante) {
+      const dettaglio = [...contenitore.querySelectorAll('.regia-phase')]
+        .find(el => el.dataset.fase === pulsante.dataset.apriFase);
+      if (dettaglio) {
+        dettaglio.open = true;
+        S.fasiRegiaAperte.add(dettaglio.dataset.fase);
+        dettaglio.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+      return;
+    }
+    const sommario = e.target.closest('.regia-phase > summary');
+    if (sommario) {
+      const dettaglio = sommario.parentElement;
+      if (dettaglio.open) S.fasiRegiaAperte.delete(dettaglio.dataset.fase);
+      else S.fasiRegiaAperte.add(dettaglio.dataset.fase);
+    }
+  };
+}
+
 /* ---------- Schermata 4: Timeline Utente ---------- */
 async function showTimeline() {
   fermaInterazioni();
@@ -696,7 +855,7 @@ async function showAdmin() {
       <b>Pannello Admin</b>
       <button class="chip" id="admLogout">Esci da Admin</button>
     </header>
-    <div class="wrap">
+    <div class="wrap admin-wrap">
       <div class="banner bad" id="adminSync" ${dati.offline ? '' : 'hidden'}>${dati.offline ? `${esc(dati.errore)} I dati potrebbero non essere aggiornati.` : ''}</div>
       <!-- Toggle Attivazione Generale -->
       <div class="toggle-card ${EventoAttivo ? 'active' : ''}">
@@ -713,7 +872,7 @@ async function showAdmin() {
       <!-- Navigation Tabs -->
       <div class="tabs">
         <button class="tab-btn ${S.tabAdmin === 'dashboard' ? 'active' : ''}" id="tabDash">Status Squadre</button>
-        <button class="tab-btn ${S.tabAdmin === 'timeline' ? 'active' : ''}" id="tabTl">Timeline Globale</button>
+        <button class="tab-btn ${S.tabAdmin === 'timeline' ? 'active' : ''}" id="tabTl">Regia · Timeline</button>
         <button class="tab-btn ${S.tabAdmin === 'modifica' ? 'active' : ''}" id="tabMod">Fasi e istruzioni</button>
         <button class="tab-btn ${S.tabAdmin === 'ruoli' ? 'active' : ''}" id="tabRuoli">Ruoli e badge</button>
       </div>
@@ -764,6 +923,7 @@ async function showAdmin() {
     e.target.disabled = false;
     S.operazioneAdmin = false;
     S.mutationVersion++;
+    if (S.tabAdmin === 'timeline' || S.tabAdmin === 'dashboard') renderTab();
   };
 
   const aggiornaStatoEvento = () => {
@@ -781,6 +941,7 @@ async function showAdmin() {
   const renderTab = () => {
     const c = $('#tabContent');
     if (!c) return;
+    c.onclick = null;
 
     if (S.tabAdmin === 'dashboard') {
       const now = new Date();
@@ -799,14 +960,15 @@ async function showAdmin() {
 
         let inRitardo = false;
         attive.forEach(f => {
-          if (f.fine && new Date(f.fine) < now && !validCompl.includes(f.id)) {
+          if (EventoAttivo && dataOk(f.fine) && new Date(f.fine).getTime() + SOGLIA_RITARDO <= now.getTime()
+            && !validCompl.includes(f.id)) {
             inRitardo = true;
           }
         });
 
         const isComplete = nTotali > 0 && nCompletati === nTotali;
         const statusClass = isComplete ? 'completed' : inRitardo ? 'late' : '';
-        const badgeLabel = nTotali === 0 ? 'Nessuna attività' : isComplete ? 'Completato' : inRitardo ? 'In Ritardo' : 'In Corso';
+        const badgeLabel = nTotali === 0 ? 'Nessuna attività' : isComplete ? 'Completato' : inRitardo ? 'Da verificare' : 'In Corso';
         const badgeClass = isComplete ? 'ok' : inRitardo ? 'late' : 'idle';
 
         html += `<div class="team-card ${statusClass}">
@@ -823,24 +985,7 @@ async function showAdmin() {
       html += '</div>';
       c.innerHTML = html;
     } else if (S.tabAdmin === 'timeline') {
-      const ord = [...Fasce].sort((a, b) => new Date(a.inizio) - new Date(b.inizio));
-      let html = '<ol class="tl" style="margin-top:14px">';
-      ord.forEach(f => {
-        const durataSpost = parseInt(f.durataSpostamento || 0, 10);
-        html += `<li class="it">
-          <div class="tm">${fmt(f.inizio)}${dataOk(f.fine) ? `<small>fino ${fmt(f.fine)}</small>` : ''}</div>
-          <div class="rail"></div>
-          <div class="nd">
-            <h3>${esc(f.titolo)} ${durataSpost > 0 ? `<small style="color:var(--shift)">(Spostamento: ${durataSpost}m)</small>` : ''}</h3>
-            ${f.note ? `<p class="mut">${esc(f.note)}</p>` : ''}
-            <ul class="pv">
-              ${(f.personalizzazioni || []).map(p => `<li><b>${esc(p.ruolo)}</b> ${p.nessunaAttivita ? '→ Nessuna attività' : `→ Luogo: <i>${esc(p.tappa || 'N/D')}</i> ${p.istruzioniSpostamento ? `<br><small>Spostamento: ${esc(p.istruzioniSpostamento)}</small>` : ''} ${p.note ? `<br><small>Nota: ${esc(p.note)}</small>` : ''}`}</li>`).join('') || '<li class="mut">Nessuna personalizzazione team</li>'}
-            </ul>
-          </div>
-        </li>`;
-      });
-      html += '</ol>';
-      c.innerHTML = html;
+      renderRegia(c);
     } else if (S.tabAdmin === 'modifica') {
       c.innerHTML = `
         <form class="box" id="ff">

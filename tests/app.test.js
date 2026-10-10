@@ -159,8 +159,82 @@ test('dashboard non considera in ritardo una fase inattiva per il ruolo', async 
       personalizzazioni: [{ ruolo: 'C1', nessunaAttivita: true }]
     }] }) }
     : { ok: true, json: async () => ({ ruoli: [{ nome: 'C1', gruppo: 'Corridoio' }] }) });
-  f.run("S.role = 'Admin'; S.token = 'test-token'");
+  f.run("S.role = 'Admin'; S.token = 'test-token'; S.tabAdmin = 'dashboard'");
   await f.run('showAdmin()');
   assert.match(f.element('#tabContent').innerHTML, /Nessuna attività/);
-  assert.doesNotMatch(f.element('#tabContent').innerHTML, /In Ritardo/);
+  assert.doesNotMatch(f.element('#tabContent').innerHTML, /Da verificare/);
+});
+
+test('regia distingue conferme, attese, ritardi e ruoli senza attività', () => {
+  const f = frontend();
+  const quadro = f.run(`preparaRegia([
+    { id: 'f1', titolo: 'Accoglienza', inizio: '2026-10-10T19:00:00Z', fine: '2026-10-10T20:04:00Z',
+      personalizzazioni: [{ ruolo: 'Corridoio', nessunaAttivita: true }, { ruolo: 'C2', nessunaAttivita: false }] },
+    { id: 'f2', titolo: 'Laboratori', inizio: '2026-10-10T20:00:00Z', fine: '2026-10-10T20:08:00Z' },
+    { id: 'f3', titolo: 'Saluti', inizio: '2026-10-10T20:09:00Z' }
+  ], [{ nome: 'C1', gruppo: 'Corridoio' }, { nome: 'C2', gruppo: 'Corridoio' }],
+  { C2: ['f2'] }, new Date('2026-10-10T20:10:00Z'), true)`);
+  assert.equal(quadro.fasi[0].conteggi.inattivi, 1);
+  assert.equal(quadro.fasi[0].righe[1].stato, 'ritardo');
+  assert.equal(quadro.fasi[1].righe[0].stato, 'attesa');
+  assert.equal(quadro.fasi[1].righe[1].stato, 'completato');
+  assert.equal(quadro.allerte.length, 2);
+  assert.equal(quadro.allerte[0].fase.id, 'f1');
+  assert.equal(quadro.allerte[0].minuti, 6);
+  assert.equal(quadro.fasi[2].conteggi.ritardo, 0, 'senza fine non si presume un ritardo');
+});
+
+test('regia sospende gli allarmi quando l’evento è in pausa e indica fase corrente e prossima', () => {
+  const f = frontend();
+  const quadro = f.run(`preparaRegia([
+    { id: 'f0', inizio: '2026-10-10T19:00:00Z', fine: '2026-10-10T19:30:00Z' },
+    { id: 'f1', inizio: '2026-10-10T20:00:00Z', fine: '2026-10-10T20:30:00Z' },
+    { id: 'f2', inizio: '2026-10-10T21:00:00Z', fine: '2026-10-10T21:30:00Z' }
+  ], [{ nome: 'C1', gruppo: 'Corridoio' }], {}, new Date('2026-10-10T20:10:00Z'), false)`);
+  assert.equal(quadro.allerte.length, 0);
+  assert.equal(quadro.correnti[0].fase.id, 'f1');
+  assert.equal(quadro.prossima.fase.id, 'f2');
+  assert.equal(quadro.fasi[0].righe[0].stato, 'pausa');
+});
+
+test('regia admin mostra alert e dettaglio ruolo, e apre la fase dall’alert', async () => {
+  const f = frontend(async url => url.includes('/programma')
+    ? { ok: true, json: async () => ({ attivo: true, completamenti: {}, fasce: [{
+      id: 'f1', titolo: 'Accoglienza', inizio: '2020-01-01T09:00:00Z', fine: '2020-01-01T10:00:00Z',
+      personalizzazioni: [{ ruolo: 'C1', tappa: 'Atrio', istruzioniSpostamento: 'Usa la scala nord' }]
+    }] }) }
+    : { ok: true, json: async () => ({ ruoli: [{ nome: 'C1', gruppo: 'Corridoio' }] }) });
+  f.run("S.role = 'Admin'; S.token = 'test-token'");
+  await f.run('showAdmin()');
+  const html = f.element('#tabContent').innerHTML;
+  assert.match(html, /Regia della serata/);
+  assert.match(html, /Aggiornato dal server/);
+  assert.match(html, /Da verificare/);
+  assert.match(html, /Luogo previsto: Atrio/);
+  assert.match(html, /Spostamento: Usa la scala nord/);
+  const dettaglio = { dataset: { fase: 'f1' }, open: false, scrollIntoView() {} };
+  f.element('#tabContent').querySelectorAll = () => [dettaglio];
+  f.element('#tabContent').onclick({ target: { closest: sel => sel === '[data-apri-fase]'
+    ? { dataset: { apriFase: 'f1' } } : null } });
+  assert.equal(dettaglio.open, true);
+  assert.equal(f.run("S.fasiRegiaAperte.has('f1')"), true);
+});
+
+test('regia si aggiorna dal server ogni 30 secondi conservando le fasi aperte', async () => {
+  let letture = 0;
+  const f = frontend(async url => url.includes('/programma')
+    ? { ok: true, json: async () => ({ attivo: true, completamenti: { C1: letture++ ? ['f1'] : [] }, fasce: [{
+      id: 'f1', titolo: 'Accoglienza', inizio: '2020-01-01T09:00:00Z', fine: '2020-01-01T10:00:00Z'
+    }] }) }
+    : { ok: true, json: async () => ({ ruoli: [{ nome: 'C1', gruppo: 'Corridoio' }] }) });
+  f.run("S.role = 'Admin'; S.token = 'test-token'");
+  await f.run('showAdmin()');
+  assert.match(f.element('#tabContent').innerHTML, /Conferma mancante/);
+  f.run("S.fasiRegiaAperte.add('f1')");
+  const timer = [...f.intervals.values()].find(i => i.ms === 30000);
+  assert.ok(timer);
+  await timer.callback();
+  assert.doesNotMatch(f.element('#tabContent').innerHTML, /Conferma mancante/);
+  assert.match(f.element('#tabContent').innerHTML, /data-fase="f1" open/);
+  assert.match(f.element('#tabContent').innerHTML, /Conferme complete/);
 });
