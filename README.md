@@ -57,6 +57,21 @@ La timeline dello staff ricarica automaticamente il programma e i completamenti
 dal server ogni 2 minuti; il pannello admin lo fa ogni 30 secondi. Un aggiornamento
 automatico non cancella i dati già modificati nell'editor e ancora da salvare.
 
+## Regia admin
+
+La scheda **Regia · Timeline** mostra le fasi previste ora e la prossima fase,
+le conferme mancanti dopo la fine prevista e il dettaglio di ogni ruolo aprendo
+una fase. Le segnalazioni compaiono alla fine prevista; dopo cinque minuti senza
+conferma diventano **Da verificare**, in ordine di tempo trascorso. I ruoli con
+**Nessuna attività** non generano segnalazioni. Il controllo si ferma quando
+l'evento è in pausa e richiede un orario di fine valido per calcolare il ritardo.
+L'interfaccia indica l'ora dell'ultimo aggiornamento server o che sta mostrando
+dati locali.
+
+Gli orari descrivono il programma previsto. Al momento i completamenti salvano
+solo gli ID delle fasi: non permettono di sapere dove si trovi effettivamente un
+ruolo né a che ora abbia completato una tappa.
+
 ## Rimozione del sistema di notifiche
 
 L'app non richiede permessi di notifica e non invia push. Sono stati rimossi

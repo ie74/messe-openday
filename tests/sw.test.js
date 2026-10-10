@@ -8,7 +8,7 @@ function worker(overrides = {}) {
   const handlers = {}, removed = [], cached = [];
   let unsubscribed = false;
   const caches = {
-    keys: async () => ['evento-v1', 'openday-v1', 'openday-v2', 'other-app'],
+    keys: async () => ['evento-v1', 'openday-v1', 'openday-v2', 'openday-v3', 'other-app'],
     delete: async key => removed.push(key),
     open: async () => ({ addAll: async () => {}, put: async (...args) => cached.push(args) }),
     match: async () => undefined
@@ -27,7 +27,7 @@ test('upgrade mantiene PWA, rimuove solo cache proprie e disiscrive la vecchia p
   let done;
   w.handlers.activate({ waitUntil: p => { done = p; } });
   await done;
-  assert.deepEqual(w.removed, ['evento-v1', 'openday-v1', 'openday-v2']);
+  assert.deepEqual(w.removed, ['evento-v1', 'openday-v1', 'openday-v2', 'openday-v3']);
   assert.equal(w.unsubscribed(), true);
 });
 
