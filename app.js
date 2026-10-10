@@ -128,6 +128,7 @@ const authHeaders = () => {
 
 const JSQR_URL = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js';
 const QRGEN_URL = 'https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js';
+const JSPDF_URL = 'https://unpkg.com/jspdf@4.2.1/dist/jspdf.umd.min.js';
 const scriptCaricati = new Map();
 const loadScript = url => {
   if (scriptCaricati.has(url)) return scriptCaricati.get(url);
@@ -150,6 +151,80 @@ const urlBadge = codice => {
   url.searchParams.set('b', codice);
   return url.href;
 };
+
+// Otto badge ritagliabili per pagina A4. I QR sono tracciati come quadrati vettoriali
+// con quattro moduli bianchi di margine, così restano nitidi anche in stampa.
+function creaPdfBadge(ruoli) {
+  if (!Array.isArray(ruoli) || !ruoli.length) throw new Error('Non ci sono ruoli da esportare.');
+  if (ruoli.some(r => !String(r?.nome || '').trim() || !String(r?.badge || '').trim()))
+    throw new Error('Almeno un ruolo non ha nome o codice badge.');
+  if (typeof window.jspdf?.jsPDF !== 'function' || typeof window.qrcode !== 'function')
+    throw new Error('Generatore PDF o QR non disponibile. Riprova con la connessione attiva.');
+
+  const pdf = new window.jspdf.jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true, precision: 4 });
+  const larghezza = pdf.internal.pageSize.getWidth();
+  const altezza = pdf.internal.pageSize.getHeight();
+  const margine = 12, spazio = 4, cima = 24, fondo = 14;
+  const cardW = (larghezza - margine * 2 - spazio) / 2;
+  const cardH = (altezza - cima - fondo - spazio * 3) / 4;
+  const perPagina = 8;
+
+  ruoli.forEach((ruolo, indice) => {
+    if (indice && indice % perPagina === 0) pdf.addPage();
+    const pagina = Math.floor(indice / perPagina) + 1;
+    if (indice % perPagina === 0) {
+      pdf.setFont('helvetica', 'bold'); pdf.setFontSize(13); pdf.setTextColor(28, 43, 63);
+      pdf.text('OPEN DAY  |  BADGE STAFF', margine, 13);
+      pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8); pdf.setTextColor(83, 96, 110);
+      pdf.text('Ritaglia lungo il bordo tratteggiato. Stampa in formato A4 al 100%.', margine, 18);
+      pdf.text(`Pagina ${pagina} / ${Math.ceil(ruoli.length / perPagina)}`, larghezza - margine, altezza - 7, { align: 'right' });
+    }
+
+    const colonna = indice % 2, riga = Math.floor(indice % perPagina / 2);
+    const x = margine + colonna * (cardW + spazio);
+    const y = cima + riga * (cardH + spazio);
+    pdf.setDrawColor(150, 160, 171); pdf.setLineWidth(0.25);
+    pdf.setLineDashPattern([1.5, 1.5], 0);
+    pdf.rect(x, y, cardW, cardH);
+    pdf.setLineDashPattern([], 0);
+
+    const qr = window.qrcode(0, 'M');
+    qr.addData(urlBadge(ruolo.badge));
+    qr.make();
+    const moduli = qr.getModuleCount();
+    const lato = 43, cella = lato / (moduli + 8);
+    const qrX = x + 4 + cella * 4, qrY = y + (cardH - lato) / 2 + cella * 4;
+    pdf.setFillColor(20, 28, 38);
+    for (let row = 0; row < moduli; row++) {
+      for (let col = 0; col < moduli; col++) {
+        if (qr.isDark(row, col)) pdf.rect(qrX + col * cella, qrY + row * cella, cella, cella, 'F');
+      }
+    }
+
+    const testoX = x + 51, testoW = cardW - 56;
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(7); pdf.setTextColor(83, 96, 110);
+    pdf.text('RUOLO', testoX, y + 11);
+    pdf.setFont('helvetica', 'bold'); pdf.setTextColor(28, 43, 63);
+    let dimensione = 11, righe;
+    while (true) {
+      pdf.setFontSize(dimensione);
+      righe = pdf.splitTextToSize(String(ruolo.nome).trim(), testoW);
+      if (righe.length * dimensione * 0.42 <= 25) break;
+      if (dimensione <= 6)
+        throw new Error(`Il nome del ruolo "${ruolo.nome}" è troppo lungo per il riquadro.`);
+      dimensione--;
+    }
+    pdf.text(righe, testoX, y + 18);
+    pdf.setFont('helvetica', 'normal'); pdf.setFontSize(7); pdf.setTextColor(83, 96, 110);
+    pdf.text('CODICE BADGE', testoX, y + cardH - 14);
+    pdf.setFont('courier', 'bold'); pdf.setFontSize(8); pdf.setTextColor(28, 43, 63);
+    const codice = String(ruolo.badge).trim();
+    if (pdf.getTextWidth(codice) > testoW)
+      throw new Error(`Il codice del ruolo "${ruolo.nome}" è troppo lungo per il riquadro.`);
+    pdf.text(codice, testoX, y + cardH - 9);
+  });
+  return pdf;
+}
 let stopScanner = null;
 const fermaInterazioni = () => {
   S.vista++;
@@ -1396,11 +1471,12 @@ async function renderRuoli(c) {
   };
   aggiornaLista(ruoli);
   let creazioneInCorso = false;
+  let esportazioneInCorso = false;
 
   const disegna = () => {
     let html = `
       <h2 style="margin-top:16px">Ruoli e Badge</h2>
-      <p class="mut">Ogni squadra accede tramite il suo codice badge univoco. Clicca "QR" per generare e stampare il QR di accesso, oppure "Rigenera" per invalidare il vecchio codice.</p>
+      <p class="mut">Ogni squadra accede tramite il suo codice badge univoco. Clicca "QR" per vedere il singolo codice, oppure "Rigenera" per invalidarlo.</p>
       <form class="box" id="fNuovoRuolo">
         <h3>Crea un ruolo</h3>
         <label for="nomeRuolo">Nome del ruolo</label>
@@ -1418,6 +1494,10 @@ async function renderRuoli(c) {
     } else if (!ruoli.length) {
       html += `<p class="mut" style="margin-top:16px">Nessun ruolo configurato. Crea il primo ruolo con il modulo qui sopra.</p>`;
     } else {
+      html += `<div class="badge-export">
+        <button type="button" class="btn" id="scaricaBadgePdf">Scarica PDF di tutti i QR</button>
+        <small>Un riquadro ritagliabile per ogni ruolo, 8 per pagina A4.</small>
+      </div>`;
       html += `<ul class="lst" style="margin-top:12px" id="listaRuoli">`;
       ruoli.forEach((r, i) => {
         const link = urlBadge(r.badge);
@@ -1460,6 +1540,35 @@ async function renderRuoli(c) {
       </div>`;
 
     c.innerHTML = html;
+
+    const btnPdf = $('#scaricaBadgePdf');
+    if (btnPdf) btnPdf.onclick = async () => {
+      if (esportazioneInCorso) return;
+      esportazioneInCorso = true;
+      S.operazioneAdmin = true;
+      attesa(btnPdf, 'Preparo il PDF...');
+      try {
+        // I badge possono essere stati rigenerati in un'altra sessione admin.
+        const risposta = await chiedi(CFG.API + '/admin', {
+          method: 'POST', headers: authHeaders(), body: JSON.stringify({ azione: 'ruoli_lista' })
+        });
+        const dati = await risposta.json();
+        if (!risposta.ok) throw new Error(dati.errore || 'Impossibile leggere i badge aggiornati.');
+        if (!Array.isArray(dati.ruoli) || !dati.ruoli.length)
+          throw new Error('Non ci sono ruoli da esportare.');
+        await Promise.all([loadScript(QRGEN_URL), loadScript(JSPDF_URL)]);
+        creaPdfBadge(dati.ruoli).save('open-day-badge-ruoli.pdf');
+        aggiornaLista(dati.ruoli);
+        disegna();
+        avvisa(`PDF pronto: ${dati.ruoli.length} badge.`);
+      } catch (errore) {
+        avvisa('PDF non creato: ' + errore.message, true);
+      } finally {
+        esportazioneInCorso = false;
+        S.operazioneAdmin = false;
+        if (btnPdf.isConnected) pronto(btnPdf);
+      }
+    };
 
     $('#fNuovoRuolo').onsubmit = async e => {
       e.preventDefault();

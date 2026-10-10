@@ -33,6 +33,12 @@ Nel pannello admin, aprire **Ruoli e Badge**, compilare **Nome del ruolo** e
 già presente o scriverne uno nuovo. Il badge viene generato dal server ed è subito
 disponibile nell'elenco, insieme al pulsante QR.
 
+Il pulsante **Scarica PDF di tutti i QR** nella stessa scheda legge i badge
+aggiornati dal server e scarica un PDF A4 con otto riquadri ritagliabili per
+pagina. Ogni riquadro contiene il QR di accesso, il nome del ruolo e il codice
+badge da digitare se la fotocamera non è disponibile. Stampare al 100% e
+conservare il PDF con cura: i codici permettono l'accesso ai rispettivi ruoli.
+
 Il nuovo ruolo compare anche nella dashboard e nelle personalizzazioni delle fasi.
 Riceve le istruzioni assegnate al suo gruppo; le istruzioni specifiche del ruolo
 hanno precedenza. Nome e gruppo sono obbligatori; i nomi duplicati, anche con
