@@ -201,7 +201,7 @@ test('regia admin mostra alert e dettaglio ruolo, e apre la fase dall’alert', 
   const f = frontend(async url => url.includes('/programma')
     ? { ok: true, json: async () => ({ attivo: true, completamenti: {}, fasce: [{
       id: 'f1', titolo: 'Accoglienza', inizio: '2020-01-01T09:00:00Z', fine: '2020-01-01T10:00:00Z',
-      personalizzazioni: [{ ruolo: 'C1', tappa: 'Atrio' }]
+      personalizzazioni: [{ ruolo: 'C1', tappa: 'Atrio', istruzioniSpostamento: 'Usa la scala nord' }]
     }] }) }
     : { ok: true, json: async () => ({ ruoli: [{ nome: 'C1', gruppo: 'Corridoio' }] }) });
   f.run("S.role = 'Admin'; S.token = 'test-token'");
@@ -211,6 +211,7 @@ test('regia admin mostra alert e dettaglio ruolo, e apre la fase dall’alert', 
   assert.match(html, /Aggiornato dal server/);
   assert.match(html, /Da verificare/);
   assert.match(html, /Luogo previsto: Atrio/);
+  assert.match(html, /Spostamento: Usa la scala nord/);
   const dettaglio = { dataset: { fase: 'f1' }, open: false, scrollIntoView() {} };
   f.element('#tabContent').querySelectorAll = () => [dettaglio];
   f.element('#tabContent').onclick({ target: { closest: sel => sel === '[data-apri-fase]'

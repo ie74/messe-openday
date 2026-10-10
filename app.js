@@ -764,6 +764,7 @@ function renderRegia(contenitore) {
         ${righe.length ? `<ul class="regia-role-list">${righe.map(riga => `<li>
           <div><b>${esc(riga.ruolo)}</b>${riga.gruppo && riga.gruppo !== riga.ruolo ? `<small>${esc(riga.gruppo)}</small>` : ''}</div>
           <div><span>${riga.stato === 'inattivo' ? 'Nessun luogo richiesto' : `Luogo previsto: ${esc(riga.assegnazione?.tappa || 'non specificato')}`}</span>
+            ${riga.stato !== 'inattivo' && riga.assegnazione?.istruzioniSpostamento ? `<small>Spostamento: ${esc(riga.assegnazione.istruzioniSpostamento)}</small>` : ''}
             ${riga.stato !== 'inattivo' && riga.assegnazione?.note ? `<small>${esc(riga.assegnazione.note)}</small>` : ''}</div>
           <span class="regia-state ${riga.stato}">${esc(statoRigaRegia(riga))}</span>
         </li>`).join('')}</ul>` : '<p class="mut">Nessun ruolo disponibile: controlla la sezione Ruoli e badge.</p>'}
