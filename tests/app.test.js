@@ -42,6 +42,31 @@ test('avvio mobile senza credenziali arriva al benvenuto senza permessi di notif
   assert.doesNotMatch(f.element('#screen').innerHTML, /notifiche/i);
 });
 
+test('scheda staff sceglie la fase corrente, esclude le inattive e conta solo le tappe previste', () => {
+  const f = frontend();
+  f.run(`aggiornaFocusStaff([
+    { id: 'pausa', titolo: 'Fase senza attività', inizio: '2026-10-22T18:00:00Z', fine: '2026-10-22T19:00:00Z', mia: { nessunaAttivita: true } },
+    { id: 'ora', titolo: 'Accoglienza <famiglie>', inizio: '2026-10-22T18:00:00Z', fine: '2026-10-22T19:00:00Z', mia: { tappa: 'Aula & Magna' } },
+    { id: 'dopo', titolo: 'Laboratori', inizio: '2026-10-22T19:00:00Z', fine: '2026-10-22T20:00:00Z' }
+  ], ['pausa', 'ora', 'ruolo-eliminato'], new Date('2026-10-22T18:30:00Z'))`);
+  const html = f.element('#staffFocus').innerHTML;
+  assert.match(html, /ORA IN PROGRAMMA/);
+  assert.match(html, /Accoglienza &lt;famiglie&gt;/);
+  assert.match(html, /Aula &amp; Magna/);
+  assert.match(html, /1<span> \/ 2 tappe/);
+  assert.doesNotMatch(html, /Fase senza attività/);
+});
+
+test('scheda staff distingue la prossima fase dal percorso completato', () => {
+  const f = frontend();
+  f.run(`window.programmaFocus = [{ id: 'f1', titolo: 'Laboratori', inizio: '2026-10-22T19:00:00Z', fine: '2026-10-22T20:00:00Z' }];
+    aggiornaFocusStaff(window.programmaFocus, [], new Date('2026-10-22T18:00:00Z'))`);
+  assert.match(f.element('#staffFocus').innerHTML, /PROSSIMA FASE/);
+  f.run("aggiornaFocusStaff(window.programmaFocus, ['f1'], new Date('2026-10-22T21:00:00Z'))");
+  assert.match(f.element('#staffFocus').innerHTML, /Hai completato tutte le tappe/);
+  assert.doesNotMatch(f.element('#staffFocus').innerHTML, /id="vaiFase"/);
+});
+
 test('gli header usano il badge o il token admin e gli URL badge codificano il codice', () => {
   const f = frontend();
   assert.equal(f.run('authHeaders()["X-Badge"]'), '1111-1111-1111-1111');
@@ -95,6 +120,7 @@ test('un errore HTTP ripristina la tappa senza annunciare un successo o salvarlo
   assert.match(f.element('#banner').innerHTML, /banner warn/);
   assert.equal(f.element('#tl').hidden, true);
   assert.equal(f.element('#tl').innerHTML, '');
+  assert.equal(f.element('#staffFocus').hidden, true);
   assert.equal(f.run('salvataggioTappa'), false);
 });
 
@@ -189,10 +215,12 @@ test('staff vede solo l’avviso in pausa e riceve le fasi quando il server atti
   await timer.callback();
   assert.equal(f.element('#tl').hidden, false);
   assert.match(f.element('#tl').innerHTML, /Accoglienza/);
+  assert.equal(f.element('#staffFocus').hidden, false);
   attivo = false;
   await timer.callback();
   assert.equal(f.element('#tl').hidden, true);
   assert.equal(f.element('#tl').innerHTML, '');
+  assert.equal(f.element('#staffFocus').hidden, true);
 });
 
 test('staff non mostra fasi salvate quando la rete cade e le ripristina alla riconnessione', async () => {
@@ -211,10 +239,12 @@ test('staff non mostra fasi salvate quando la rete cade e le ripristina alla ric
   assert.match(f.element('#banner').innerHTML, /banner warn/);
   assert.equal(f.element('#tl').hidden, true);
   assert.equal(f.element('#tl').innerHTML, '');
+  assert.equal(f.element('#staffFocus').hidden, true);
   rete = true;
   await timer.callback();
   assert.equal(f.element('#tl').hidden, false);
   assert.match(f.element('#tl').innerHTML, /Accoglienza/);
+  assert.equal(f.element('#staffFocus').hidden, false);
 });
 
 test('staff non mostra un programma malformato restituito dal server', async () => {
