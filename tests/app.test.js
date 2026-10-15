@@ -34,12 +34,37 @@ function frontend(response, initialStorage = {}) {
   return { run, storage, element, intervals };
 }
 
-test('avvio mobile senza credenziali arriva al benvenuto senza permessi di notifica', async () => {
+test('iPhone nel browser mostra la guida prima del badge o di una sessione salvata', async () => {
   const f = frontend();
-  f.run('S.role = null; S.badge = null');
+  await f.run('boot()');
+  const html = f.element('#screen').innerHTML;
+  assert.match(html, /Installa<br>l'app Open Day/);
+  assert.match(html, /Safari/);
+  assert.match(html, /Condividi/);
+  assert.match(html, /Aggiungi alla schermata Home/);
+  assert.match(html, /Apri come app web/);
+  assert.doesNotMatch(html, /id="codf"/);
+});
+
+test('avvio dalla Home senza credenziali arriva al benvenuto senza ripetere la guida', async () => {
+  const f = frontend();
+  f.run('env.standalone = true; S.role = null; S.badge = null');
   await f.run('boot()');
   assert.match(f.element('#screen').innerHTML, /Benvenuto/);
   assert.doesNotMatch(f.element('#screen').innerHTML, /notifiche/i);
+  assert.doesNotMatch(f.element('#screen').innerHTML, /install-steps/);
+});
+
+test('desktop apre direttamente il benvenuto e Android riceve i passaggi adatti', async () => {
+  const desktop = frontend();
+  desktop.run('env.mobile = false; S.role = null; S.badge = null');
+  await desktop.run('boot()');
+  assert.match(desktop.element('#screen').innerHTML, /Benvenuto/);
+  const android = frontend();
+  android.run('env.ios = false');
+  await android.run('boot()');
+  assert.match(android.element('#screen').innerHTML, /Installa app/);
+  assert.doesNotMatch(android.element('#screen').innerHTML, /Safari/);
 });
 
 test('scheda staff sceglie la fase corrente, esclude le inattive e conta solo le tappe previste', () => {

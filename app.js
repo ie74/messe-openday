@@ -3,8 +3,8 @@
 const CFG = {
   API: '/api',              // '' = nessun server, l'app va coi dati di esempio
   ADMIN: 'Admin',
-  // false = salta la schermata "installa l'app" (utile per i test). Da riattivare prima dell'evento.
-  CONTROLLA_INSTALLAZIONE: false,
+  // Su mobile, mostra la guida finché l'app non viene aperta dalla schermata Home.
+  CONTROLLA_INSTALLAZIONE: true,
   GROUPS: [
     { label: 'Corridoio', units: [] },
     { label: 'Aula', units: ['Aula 1', 'Aula 2', 'Aula 3', 'Aula 4', 'Aula 5', 'Aula 6', 'Aula 7', 'Aula 8'] }
@@ -378,16 +378,22 @@ async function boot() {
 function showInstall() {
   const steps = env.ios
     ? `<li>Apri questa pagina in <b>Safari</b>, non dentro WhatsApp o Instagram</li>
-       <li>Tocca <b>Condividi</b> in basso</li>
+       <li>Tocca <b>Condividi</b> (il quadrato con la freccia). Se non lo vedi, apri il <b>menu della pagina</b> e scegli Condividi.</li>
        <li>Scegli <b>Aggiungi alla schermata Home</b></li>
-       <li>Apri l'app dall'<b>icona sulla Home</b></li>`
+       <li>Se compare, attiva <b>Apri come app web</b>, poi tocca <b>Aggiungi</b>.</li>
+       <li>Apri Open Day dall'<b>icona con la m sulla Home</b>.</li>`
     : `<li>Tocca <b>Installa app</b> qui sotto, oppure apri il menu del browser</li>
        <li>Conferma l'installazione</li>
        <li>Apri l'app dall'<b>icona sulla Home</b></li>`;
-  screen.innerHTML = `<div class="wrap center"><h1>Installa l'app</h1>
-    <p class="mut">Installa l'app per accedere rapidamente al programma dalla schermata Home.</p>
-    <ol style="text-align:left; margin: 20px auto; max-width: 340px; line-height: 1.6">${steps}</ol>
-    ${env.ios ? '' : `<button class="btn" id="inst" ${installEvt ? '' : 'hidden'}>Installa app</button>`}</div>`;
+  screen.innerHTML = `<div class="wrap access-wrap">
+    ${marchio()}
+    <div class="access-intro"><span class="eyebrow">SEMPRE A PORTATA DI MANO.</span><h1>Installa<br>l'app Open Day.</h1>
+    <p class="mut">Aggiungila alla schermata Home per accedere al tuo percorso durante la serata.</p></div>
+    <div class="access-card"><h2>${env.ios ? 'Sul tuo iPhone o iPad' : 'Sul tuo telefono'}</h2>
+    <ol class="install-steps">${steps}</ol>
+    ${env.ios ? '' : `<button class="btn" id="inst" ${installEvt ? '' : 'hidden'}>Installa app</button>`}
+    <p class="mut">Dopo l'installazione, apri l'app dalla Home e accedi con il tuo badge.</p></div>
+    <p class="access-footer">OPEN DAY · LICEO A. MESSEDAGLIA</p></div>`;
   $('#inst')?.addEventListener('click', async () => { installEvt.prompt(); await installEvt.userChoice; });
 }
 
