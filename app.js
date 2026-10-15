@@ -16,6 +16,19 @@ const ONLINE = !!CFG.API;
 const $ = s => document.querySelector(s);
 const screen = $('#screen');
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const icona = nome => {
+  const tratti = {
+    qr: '<rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="3" width="6" height="6" rx="1"/><rect x="3" y="15" width="6" height="6" rx="1"/><path d="M15 15h3v3h3v3h-6zM21 12v3M12 21v-6"/>',
+    arrow: '<path d="M12 4v16m-6-6 6 6 6-6"/>',
+    route: '<circle cx="6" cy="5" r="2"/><circle cx="18" cy="19" r="2"/><path d="M6 7v6a4 4 0 0 0 4 4h4a4 4 0 0 0 0-8h-1"/>',
+    team: '<circle cx="9" cy="8" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 5a3 3 0 0 1 0 6m3 10v-3a6 6 0 0 0-2-4"/>',
+    edit: '<path d="m15 5 4 4M4 20l5-1L20 8a3 3 0 0 0-4-4L5 15z"/>',
+    check: '<path d="m5 12 4 4L19 6"/>',
+    pin: '<path d="M20 10c0 6-8 11-8 11S4 16 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2.5"/>'
+  };
+  return `<svg class="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${tratti[nome] || tratti.route}</svg>`;
+};
+const marchio = () => '<a class="brand" href="./" aria-label="Open Day Messedaglia, accesso"><span class="brand-mark" aria-hidden="true">m<span>·</span></span><span>OPEN DAY<small>Liceo Messedaglia</small></span></a>';
 const store = {
   get(k, d = null) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { } },
@@ -70,7 +83,7 @@ async function chiedi(url, opts = {}, ms = 8000) {
 let toastT = null;
 function avvisa(testo, male = false) {
   let t = $('#toast');
-  if (!t) { t = document.createElement('div'); t.id = 'toast'; document.body.appendChild(t); }
+  if (!t) { t = document.createElement('div'); t.id = 'toast'; t.setAttribute('role', 'status'); document.body.appendChild(t); }
   t.textContent = testo;
   t.className = male ? 'male' : '';
   t.hidden = false;
@@ -382,18 +395,22 @@ function showInstall() {
 function showRoles() {
   fermaInterazioni();
   inCorso = false;
-  screen.innerHTML = `<div class="wrap"><h1>Benvenuto</h1>
-    <p class="mut">Usa il badge della tua squadra per vedere tappe e istruzioni.</p>
-    <button class="btn" id="scan">Scansiona il badge</button>
+  screen.innerHTML = `<div class="wrap access-wrap">
+    ${marchio()}
+    <div class="access-intro"><span class="eyebrow">LA SERATA, INSIEME.</span><h1>Benvenuto<br>nella squadra.</h1>
+    <p class="mut">Il tuo percorso, le tue istruzioni.<br>Tutto a portata di mano.</p></div>
+    <div class="access-card"><span class="access-symbol">${icona('qr')}</span><h2>Si parte dal tuo badge</h2>
+    <p class="mut">Inquadra il QR per accedere al programma del tuo ruolo.</p>
+    <button class="btn" id="scan">${icona('qr')} Scansiona il badge</button>
     <form class="box" id="codf">
-      <label for="cod">Oppure scrivi il codice stampato sul badge</label>
-      <input type="text" id="cod" autocomplete="off" autocapitalize="characters" placeholder="xxxx-xxxx-xxxx-xxxx">
-      <button class="btn ghost">Entra</button>
-      <p class="bad" id="cerr"></p>
+      <label for="cod">Oppure inserisci il codice del badge</label>
+      <input type="text" id="cod" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="xxxx-xxxx-xxxx-xxxx" aria-describedby="cerr">
+      <button class="btn ghost">Accedi con il codice</button>
+      <p class="bad" id="cerr" role="alert"></p>
     </form>
-    <div id="scanbox"></div>
-    <button class="btn ghost" id="adm">Sono un admin</button>
-    <div id="admbox"></div></div>`;
+    <div id="scanbox"></div></div>
+    <button class="admin-access" id="adm">Accesso coordinatori <span aria-hidden="true">↗</span></button>
+    <div id="admbox"></div><p class="access-footer">OPEN DAY · LICEO A. MESSEDAGLIA</p></div>`;
   $('#scan').onclick = avviaScanner;
   $('#codf').onsubmit = async e => { e.preventDefault(); await entraConBadge($('#cod').value, $('#cerr')); };
   $('#adm').onclick = adminForm;
@@ -676,7 +693,7 @@ function renderList(scroll) {
         <div class="tm">${fmt(tInizio)}<small>fino ${fmt(tFineSpost)}</small></div>
         <div class="rail"></div>
         <div class="nd">
-          <h3>SPOSTAMENTO VERSO ${esc(luogoTeam).toUpperCase()}${stSpost === 'now' ? '<span class="pill shift-pill">In corso</span>' : ''}${pillAllarme}</h3>
+          <span class="eyebrow">${icona('route')} Spostamento</span><h3>Verso ${esc(luogoTeam)}${stSpost === 'now' ? '<span class="pill shift-pill">In corso</span>' : ''}${pillAllarme}</h3>
           ${istruzioniSpost ? `<p class="mut"><b>Istruzioni:</b> ${esc(istruzioniSpost)}</p>` : ''}
         </div>
       </li>`;
@@ -688,12 +705,12 @@ function renderList(scroll) {
       <div class="rail"></div>
       <div class="nd">
         <h3>${esc(f.titolo)}${nessunaAttivita ? '<span class="pill">Nessuna attività</span>' : stTappa === 'now' ? '<span class="pill">In svolgimento</span>' : ''}${isFatto ? '<span class="pill ok-pill">Completata</span>' : ''}${pillAllarme}</h3>
-        ${luogoTeam ? `<p class="loc">Luogo: ${esc(luogoTeam)}</p>` : ''}
+        ${luogoTeam ? `<p class="loc">${icona('pin')} ${esc(luogoTeam)}</p>` : ''}
         ${noteTeam ? `<p class="mut">Nota: ${esc(noteTeam)}</p>` : ''}
 
         ${nessunaAttivita ? '<p class="mut">Puoi seguire questa fase, ma non hai attività da completare.</p>' : `<div class="chk-box">
-          <button class="chk-btn ${isFatto ? 'done' : ''}" data-fascia="${esc(f.id)}" ${salvataggioTappa ? 'disabled' : ''}>
-            ${isFatto ? '[X] Tappa completata' : '[ ] Segna come completata'}
+          <button class="chk-btn ${isFatto ? 'done' : ''}" data-fascia="${esc(f.id)}" aria-pressed="${isFatto}" ${salvataggioTappa ? 'disabled' : ''}>
+            ${icona('check')} ${isFatto ? 'Tappa completata' : 'Segna come completata'}
           </button>
         </div>`}
       </div>
@@ -711,7 +728,31 @@ function renderList(scroll) {
     const button = e.target.closest('[data-fascia]');
     if (button && !button.disabled) toggleCompletato(button.dataset.fascia);
   };
-  if (scroll) $('.it.now, .it.next')?.scrollIntoView({ block: 'center' });
+  aggiornaFocusStaff(ord, completatiRole, now);
+}
+
+// La scheda di orientamento usa solo dati già verificati e visibili allo staff.
+function aggiornaFocusStaff(ordinate, completati, now) {
+  const target = $('#staffFocus');
+  if (!target) return;
+  const attive = ordinate.filter(f => (f.mia || personalizzazionePer(f, S.role, gruppo()))?.nessunaAttivita !== true);
+  const inOrario = attive.find(f => dataOk(f.inizio) && new Date(f.inizio) <= now && dataOk(f.fine) && new Date(f.fine) > now);
+  const prossima = attive.find(f => dataOk(f.inizio) && new Date(f.inizio) > now);
+  const fase = inOrario || prossima;
+  const mia = fase && (fase.mia || personalizzazionePer(fase, S.role, gruppo()));
+  const n = attive.filter(f => completati.includes(f.id)).length;
+  const html = `<div class="staff-progress"><span>IL TUO PERCORSO</span><b>${n}<span> / ${attive.length} tappe</span></b></div>
+    <div class="staff-focus-card"><span class="focus-label"><span class="status-dot"></span>${inOrario ? 'ORA IN PROGRAMMA' : prossima ? `PROSSIMA FASE · ${fmt(fase.inizio)}` : 'IL TUO PROGRAMMA'}</span>
+    <h2>${esc(fase?.titolo || (attive.length && n === attive.length ? 'Hai completato tutte le tappe.' : 'Nessuna fase in arrivo.'))}</h2>
+    ${mia?.tappa ? `<p>${icona('pin')} ${esc(mia.tappa)}</p>` : '<p>Consulta qui sotto le tappe della serata.</p>'}
+    ${fase ? `<button class="focus-link" id="vaiFase">Vai alla fase ${icona('arrow')}</button>` : ''}</div>`;
+  if (target.innerHTML === html) return;
+  target.innerHTML = html;
+  $('#vaiFase')?.addEventListener('click', () => {
+    const button = Array.from(document.querySelectorAll('[data-fascia]')).find(b => b.dataset.fascia === fase.id);
+    button?.closest('.it')?.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'center' });
+    button?.focus({ preventScroll: true });
+  });
 }
 
 function renderBannerTimeline(d) {
@@ -728,7 +769,7 @@ function renderBannerTimeline(d) {
   }
   $('#banner').innerHTML = titolo
     ? `<div class="banner warn staff-status" role="status"><span><b>${titolo}</b><br>${esc(messaggio)}</span><button class="btn mini" id="retry">Riprova</button></div>`
-    : '<div class="banner active"><b>EVENTO ATTIVO</b> - Segui gli orari e segna le tappe man mano che le completi.</div>';
+    : '<div class="banner active"><span class="status-dot"></span><b>Evento attivo</b><span>Segna le tappe quando le completi.</span></div>';
   $('#retry')?.addEventListener('click', showTimeline);
 }
 
@@ -737,6 +778,8 @@ function renderStatoTimeline(d, scroll) {
   const lista = $('#tl');
   const visibile = EventoAttivo && !S.datiOffline && !S.erroreTimeline && !d.offline && !d.demo;
   lista.hidden = !visibile;
+  if ($('#staffFocus')) $('#staffFocus').hidden = !visibile;
+  if ($('#staffProgramHeading')) $('#staffProgramHeading').hidden = !visibile;
   if (!visibile) {
     lista.innerHTML = '';
     lista.onclick = null;
@@ -909,9 +952,12 @@ async function showTimeline() {
   fermaInterazioni();
   const vista = S.vista;
   inCorso = true;
-  screen.innerHTML = `<header class="top"><b id="clock"></b><button class="chip" id="chg">${esc(S.role || 'Ruolo')}, cambia</button></header>
-    <div class="wrap">
+  screen.innerHTML = `<header class="top staff-top">${marchio()}<div class="live-clock"><span>ORA LOCALE</span><b id="clock"></b></div></header>
+    <div class="wrap staff-wrap">
+      <div class="staff-heading"><div><span class="eyebrow">IL TUO RUOLO</span><h1>${esc(S.role || 'Staff')}</h1><p class="mut">${esc(gruppo() || 'Squadra Open Day')}</p></div><button class="chip" id="chg">Cambia badge</button></div>
       <div id="banner"><div class="banner warn staff-status" role="status">Verifica dello stato dell’evento...</div></div>
+      <section id="staffFocus" aria-label="La tua prossima fase" hidden></section>
+      <h2 class="program-heading" id="staffProgramHeading" hidden>Le tappe della serata <span>IN ORDINE DI ORARIO</span></h2>
       <ol class="tl" id="tl" hidden></ol>
     </div>`;
 
@@ -951,10 +997,11 @@ async function showAdmin() {
 
 
   screen.innerHTML = `<header class="top">
-      <b>Pannello Admin</b>
+      ${marchio()}
       <button class="chip" id="admLogout">Esci da Admin</button>
     </header>
     <div class="wrap admin-wrap">
+      <div class="admin-heading"><span class="eyebrow">COORDINAMENTO</span><h1>La serata, sotto controllo.</h1><p class="mut">Programma, squadre e conferme in un unico posto.</p></div>
       <div class="banner bad" id="adminSync" ${dati.offline ? '' : 'hidden'}>${dati.offline ? `${esc(dati.errore)} I dati potrebbero non essere aggiornati.` : ''}</div>
       <!-- Toggle Attivazione Generale -->
       <div class="toggle-card ${EventoAttivo ? 'active' : ''}">
@@ -963,18 +1010,18 @@ async function showAdmin() {
           <p>${EventoAttivo ? 'Le tappe e gli indicatori di ritardo sono attivi.' : 'Attiva l\'evento quando il programma deve iniziare.'}</p>
         </div>
         <label class="switch">
-          <input type="checkbox" id="toggleEvt" ${EventoAttivo ? 'checked' : ''}>
+          <input type="checkbox" id="toggleEvt" aria-label="Attiva l’evento per tutto lo staff" ${EventoAttivo ? 'checked' : ''}>
           <span class="slider"></span>
         </label>
       </div>
 
       <!-- Navigation Tabs -->
-      <div class="tabs">
-        <button class="tab-btn ${S.tabAdmin === 'dashboard' ? 'active' : ''}" id="tabDash">Status Squadre</button>
-        <button class="tab-btn ${S.tabAdmin === 'timeline' ? 'active' : ''}" id="tabTl">Regia · Timeline</button>
-        <button class="tab-btn ${S.tabAdmin === 'modifica' ? 'active' : ''}" id="tabMod">Fasi e istruzioni</button>
-        <button class="tab-btn ${S.tabAdmin === 'ruoli' ? 'active' : ''}" id="tabRuoli">Ruoli e badge</button>
-      </div>
+      <nav class="tabs" aria-label="Sezioni coordinamento">
+        <button class="tab-btn ${S.tabAdmin === 'timeline' ? 'active' : ''}" id="tabTl">${icona('route')}<span>Regia</span></button>
+        <button class="tab-btn ${S.tabAdmin === 'dashboard' ? 'active' : ''}" id="tabDash">${icona('team')}<span>Squadre</span></button>
+        <button class="tab-btn ${S.tabAdmin === 'modifica' ? 'active' : ''}" id="tabMod">${icona('edit')}<span>Fasi</span></button>
+        <button class="tab-btn ${S.tabAdmin === 'ruoli' ? 'active' : ''}" id="tabRuoli">${icona('qr')}<span>Badge</span></button>
+      </nav>
 
       <div id="tabContent"></div>
     </div>`;
@@ -1246,18 +1293,26 @@ async function showAdmin() {
     }
   };
 
-  $('#tabDash').onclick = () => { bozzaForm = false; S.tabAdmin = 'dashboard'; updateTabs(); renderTab(); };
-  $('#tabTl').onclick = () => { bozzaForm = false; S.tabAdmin = 'timeline'; updateTabs(); renderTab(); };
-  $('#tabMod').onclick = () => { bozzaForm = false; S.tabAdmin = 'modifica'; updateTabs(); renderTab(); };
-  $('#tabRuoli').onclick = () => { bozzaForm = false; S.tabAdmin = 'ruoli'; updateTabs(); renderTab(); };
+  const cambiaTab = tab => {
+    bozzaForm = false; S.tabAdmin = tab; updateTabs(); renderTab();
+    window.scrollTo?.({ top: 0, behavior: 'instant' });
+  };
+  $('#tabDash').onclick = () => cambiaTab('dashboard');
+  $('#tabTl').onclick = () => cambiaTab('timeline');
+  $('#tabMod').onclick = () => cambiaTab('modifica');
+  $('#tabRuoli').onclick = () => cambiaTab('ruoli');
 
   function updateTabs() {
     $('#tabDash').className = `tab-btn ${S.tabAdmin === 'dashboard' ? 'active' : ''}`;
     $('#tabTl').className = `tab-btn ${S.tabAdmin === 'timeline' ? 'active' : ''}`;
     $('#tabMod').className = `tab-btn ${S.tabAdmin === 'modifica' ? 'active' : ''}`;
     $('#tabRuoli').className = `tab-btn ${S.tabAdmin === 'ruoli' ? 'active' : ''}`;
+    for (const id of ['tabDash', 'tabTl', 'tabMod', 'tabRuoli']) {
+      $('#' + id).setAttribute?.('aria-current', $('#' + id).className.includes('active') ? 'page' : 'false');
+    }
   }
 
+  updateTabs();
   renderTab();
   avviaRefresh(30000, async valida => {
     if (S.operazioneAdmin) return;
