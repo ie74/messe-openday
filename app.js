@@ -28,7 +28,7 @@ const icona = nome => {
   };
   return `<svg class="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${tratti[nome] || tratti.route}</svg>`;
 };
-const marchio = () => '<a class="brand" href="./" aria-label="Open Day Messedaglia, accesso"><span class="brand-mark" aria-hidden="true">m<span>·</span></span><span>OPEN DAY<small>Liceo Messedaglia</small></span></a>';
+const marchio = () => '<a class="brand" href="./" aria-label="Open Day Messedaglia, accesso"><img class="brand-mark" src="brand-mark.svg" width="40" height="40" alt="" aria-hidden="true"><span>OPEN DAY<small>Liceo Messedaglia</small></span></a>';
 const store = {
   get(k, d = null) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { } },
