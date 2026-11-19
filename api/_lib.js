@@ -72,7 +72,11 @@ const aggiorna = async (id, modifica, vuoto = {}) => {
   const db = fs(), ref = db.collection('config').doc(id);
   return db.runTransaction(async tx => {
     const snapshot = await tx.get(ref);
-    const dati = modifica(snapshot.exists ? snapshot.data() : structuredClone(vuoto));
+    const leggiNellaTransazione = async (altroId, fallback) => {
+      const altro = await tx.get(db.collection('config').doc(altroId));
+      return altro.exists ? altro.data() : fallback;
+    };
+    const dati = await modifica(snapshot.exists ? snapshot.data() : structuredClone(vuoto), leggiNellaTransazione);
     const risultato = { ...dati, aggiornato: new Date().toISOString() };
     tx.set(ref, risultato);
     return risultato;
@@ -83,11 +87,11 @@ const aggiorna = async (id, modifica, vuoto = {}) => {
    server risolve il ruolo da lì, e il telefono non può dichiararne uno proprio. */
 const normalizzaCodice = c => String(c || '').toLowerCase().replace(/[^0-9a-f]/g, '');
 const generaCodice = () => require('crypto').randomBytes(8).toString('hex').match(/.{4}/g).join('-');
-const leggiRuoli = async () => (await leggi('ruoli', { items: [] })).items || [];
-const trovaRuolo = async codice => {
+const leggiRuoli = async (lettore = leggi) => (await lettore('ruoli', { items: [] })).items || [];
+const trovaRuolo = async (codice, lettore = leggi) => {
     const c = normalizzaCodice(codice);
     if (c.length < 16) return null;
-    return (await leggiRuoli()).find(r => normalizzaCodice(r.badge) === c) || null;
+    return (await leggiRuoli(lettore)).find(r => r.attivo !== false && normalizzaCodice(r.badge) === c) || null;
 };
 
 module.exports = { rilasciaToken, verificaToken, confronta, segreto, troppo, nota, azzera, leggi, scrivi, aggiorna,

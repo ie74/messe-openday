@@ -1,7 +1,8 @@
-const CACHE = 'openday-v9';
+const CACHE = 'openday-v10';
 const SHELL = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest',
   'brand-mark.svg', 'favicon.png?v=9', 'apple-touch-icon.png?v=8',
-  'icon-192.png?v=8', 'icon-512.png?v=8', 'icon-maskable-512.png?v=8'];
+  'icon-192.png?v=8', 'icon-512.png?v=8', 'icon-maskable-512.png?v=8',
+  'piantina-laboratori.png', 'piantina-fase-libera.png'];
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)));

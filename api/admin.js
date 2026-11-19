@@ -1,4 +1,4 @@
-const { rilasciaToken, verificaToken, confronta, segreto, troppo, nota, azzera, scrivi, aggiorna,
+const { rilasciaToken, verificaToken, confronta, segreto, troppo, nota, azzera, aggiorna,
   leggiRuoli, trovaRuolo, generaCodice } = require('./_lib');
 const { senzaAttivita } = require('./_fasi');
 
@@ -27,18 +27,17 @@ module.exports = async (req, res) => {
     const { fasciaId, completato } = req.body || {};
     if (typeof fasciaId !== 'string' || !fasciaId || typeof completato !== 'boolean')
       return res.status(400).json({ errore: 'Dati mancanti o non validi.' });
-    let ruolo = '', gruppo = '';
     try {
-      if (admin && req.body.ruolo) {
-        ruolo = String(req.body.ruolo);
-        gruppo = (await leggiRuoli()).find(r => r.nome === ruolo)?.gruppo || '';
-      }
-      else {
-        const r = await trovaRuolo(req.headers['x-badge']);
-        if (!r) return res.status(401).json({ errore: 'Badge non valido o revocato.' });
-        ruolo = r.nome; gruppo = r.gruppo || '';
-      }
-      const prog = await aggiorna('programma', corrente => {
+      const prog = await aggiorna('programma', async (corrente, leggi) => {
+        let ruolo, gruppo;
+        if (admin && req.body.ruolo) {
+          ruolo = String(req.body.ruolo);
+          gruppo = (await leggiRuoli(leggi)).find(r => r.nome === ruolo)?.gruppo || '';
+        } else {
+          const r = await trovaRuolo(req.headers['x-badge'], leggi);
+          if (!r) throw Object.assign(new Error('Badge non valido o revocato.'), { status: 401 });
+          ruolo = r.nome; gruppo = r.gruppo || '';
+        }
         if (!admin && corrente.attivo !== true)
           throw Object.assign(new Error('Evento in pausa: attendi l’avvio prima di completare una tappa.'), { status: 409 });
         const fase = (corrente.fasce || corrente.items || []).find(f => f.id === fasciaId);
@@ -62,6 +61,21 @@ module.exports = async (req, res) => {
   if (azione === 'ruoli_lista') {
     try { return res.json({ ruoli: await leggiRuoli() }); }
     catch (e) { return res.status(500).json({ errore: e.message }); }
+  }
+
+  if (azione === 'ruoli_stato') {
+    const { nome, attivo } = req.body;
+    if (typeof nome !== 'string' || !nome.trim() || typeof attivo !== 'boolean')
+      return res.status(400).json({ errore: 'Ruolo o stato non valido.' });
+    try {
+      const doc = await aggiorna('ruoli', corrente => {
+        const lista = corrente.items || [];
+        if (!lista.some(r => r.nome === nome))
+          throw Object.assign(new Error('Ruolo non trovato.'), { status: 404 });
+        return { ...corrente, items: lista.map(r => r.nome === nome ? { ...r, attivo } : r) };
+      });
+      return res.json({ ok: true, ruoli: doc.items });
+    } catch (e) { return res.status(e.status || 500).json({ errore: e.message }); }
   }
 
   if (azione === 'ruoli_crea') {
@@ -119,8 +133,18 @@ module.exports = async (req, res) => {
           return { ...prog, fasce, completamenti };
         });
       }
-      await scrivi('ruoli', { items: risultato });
-      res.json({ ok: true, ruoli: risultato, rimossi, rinominati: Object.keys(rinomine).length });
+      // Lo stato si modifica dalla lista badge. Conserva anche i cambi concorrenti.
+      const doc = await aggiorna('ruoli', corrente => ({
+        ...corrente,
+        items: risultato.map(r => {
+          const esistenti = corrente.items || [];
+          const precedente = esistenti.find(v => v.badge === r.badge) || esistenti.find(v => v.nome === r.nome);
+          return precedente
+            ? { ...precedente, ...r, badge: precedente.badge || r.badge }
+            : r;
+        })
+      }));
+      res.json({ ok: true, ruoli: doc.items, rimossi, rinominati: Object.keys(rinomine).length });
     } catch (e) { res.status(500).json({ errore: e.message }); }
     return;
   }
