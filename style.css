@@ -993,6 +993,21 @@ input:focus, select:focus, textarea:focus { box-shadow: 0 0 0 4px #23634c19; }
 #cerr:empty, #err:empty { display: none; }
 #cerr, #err { margin-top: 12px; font-size: 13px; }
 .staff-wrap { max-width: 620px; padding-top: 28px; }
+.staff-tabs { margin: 0 0 16px; }
+.staff-map .btn { margin: 0 0 12px; }
+.map-viewport {
+    max-height: 65vh;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: #fff;
+}
+.map-viewport img { display: block; width: 100%; height: auto; }
+.map-viewport.is-zoomed img { width: 1100px; max-width: none; }
+.role-toggle { padding: 6px 10px; font-size: .8rem; }
+@media (max-width: 480px) {
+    .riga.role-row > :first-child { flex-basis: 100%; }
+}
 .live-clock { text-align: right; }
 .live-clock > span { display: block; font-size: 8px; letter-spacing: .12em; color: var(--text-muted); font-weight: 700; }
 .live-clock b { font-size: 20px; letter-spacing: -.04em; }

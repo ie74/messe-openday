@@ -79,6 +79,49 @@ test('badge identifica il ruolo; query e corpo non possono impersonarne un altro
   assert.equal(view.data.ruolo, 'C1');
 });
 
+test('solo un admin può sospendere e ripristinare un ruolo con lo stesso badge e le stesse attività', async () => {
+  const f = fixture();
+  const codice = f.docs.get('ruoli').items[0].badge;
+  const headers = { 'x-badge': codice };
+  const modifica = { azione: 'ruoli_stato', nome: 'C1', attivo: false };
+  const completa = { azione: 'segna_completato', fasciaId: 'f1', completato: true };
+  const programma = f.docs.get('programma');
+  programma.fasce[0].personalizzazioni = [{ ruolo: 'C1', tappa: 'Atrio' }];
+  assert.equal((await f.call(f.admin, completa, headers)).code, 200);
+  const prima = structuredClone(f.docs.get('programma'));
+
+  assert.equal((await f.call(f.admin, modifica, headers)).code, 401);
+  assert.equal((await f.call(f.admin, { ...modifica, attivo: 'false' }, f.auth)).code, 400);
+  assert.equal((await f.call(f.admin, { ...modifica, nome: 'Assente' }, f.auth)).code, 404);
+  assert.equal((await f.call(f.admin, modifica, f.auth)).code, 200);
+  const lista = await f.call(f.admin, { azione: 'ruoli_lista' }, f.auth);
+  assert.deepEqual(lista.data.ruoli[0], { nome: 'C1', gruppo: 'Corridoio', badge: codice, attivo: false });
+  assert.equal((await f.call(f.badge, { codice })).code, 401);
+  assert.equal((await f.call(f.programma, {}, headers, 'GET')).code, 401);
+  assert.equal((await f.call(f.admin, { ...completa, completato: false }, headers)).code, 401);
+  assert.equal((await f.call(f.badge, { codice: lista.data.ruoli[1].badge })).code, 200);
+
+  assert.equal((await f.call(f.admin, { ...modifica, attivo: true }, f.auth)).code, 200);
+  assert.equal((await f.call(f.badge, { codice })).data.ruolo, 'C1');
+  const ripristinato = await f.call(f.programma, {}, headers, 'GET');
+  assert.equal(ripristinato.data.fasce[0].mia.tappa, 'Atrio');
+  assert.deepEqual(ripristinato.data.completamenti, { C1: ['f1'] });
+  assert.deepEqual(f.docs.get('programma'), prima);
+});
+
+test('il salvataggio avanzato con una lista precedente conserva lo stato del ruolo', async () => {
+  const f = fixture();
+  const ruoli = structuredClone(f.docs.get('ruoli').items);
+  const [salvataggio, disabilitazione] = await Promise.all([
+    f.call(f.admin, { azione: 'ruoli_salva', ruoli }, f.auth),
+    f.call(f.admin, { azione: 'ruoli_stato', nome: 'C1', attivo: false }, f.auth)
+  ]);
+  assert.equal(salvataggio.code, 200);
+  assert.equal(disabilitazione.code, 200);
+  assert.equal(f.docs.get('ruoli').items[0].attivo, false);
+  assert.equal((await f.call(f.badge, { codice: ruoli[0].badge })).code, 401);
+});
+
 test('ruolo senza attività vede la fase ma non può completarla, anche via API', async () => {
   const f = fixture();
   f.docs.set('programma', { attivo: true, completamenti: {}, fasce: [

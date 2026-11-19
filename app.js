@@ -125,7 +125,7 @@ S.gruppo = store.get('gruppo', '');
 addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; $('#inst')?.removeAttribute('hidden'); });
 
 // RuoliDB: caricato dinamicamente dal server. Fallback su CFG.GROUPS se offline.
-let RuoliDB = []; // Array di { nome, gruppo }
+let RuoliDB = []; // Array di { nome, gruppo, attivo }
 
 const isAdmin = () => S.role === CFG.ADMIN && !!S.token;
 const gruppo = () => isAdmin() ? '' : (S.gruppo || '');
@@ -267,7 +267,9 @@ function ricalcolaRuoli() {
 
   // Ricrea TUTTE_LE_SQUADRE (solo nomi individuali)
   TUTTE_LE_SQUADRE.length = 0;
-  fonte.forEach(r => { if (!TUTTE_LE_SQUADRE.includes(r.nome)) TUTTE_LE_SQUADRE.push(r.nome); });
+  fonte.forEach(r => {
+    if (r.attivo !== false && !TUTTE_LE_SQUADRE.includes(r.nome)) TUTTE_LE_SQUADRE.push(r.nome);
+  });
 }
 
 const TUTTE_LE_SQUADRE = [];
@@ -300,6 +302,7 @@ const gruppoDiRuolo = ruolo => RuoliDB.find(r => r.nome === ruolo)?.gruppo
 
 async function loadRuoliDB() {
   if (!ONLINE) return;
+  const { vista, mutationVersion } = S;
   try {
     const r = await chiedi(CFG.API + '/admin', {
       method: 'POST',
@@ -307,8 +310,8 @@ async function loadRuoliDB() {
       body: JSON.stringify({ azione: 'ruoli_lista' })
     });
     const d = await r.json();
-    if (r.ok && Array.isArray(d.ruoli)) {
-      RuoliDB = d.ruoli.map(r => ({ nome: r.nome, gruppo: r.gruppo || r.nome }));
+    if (vista === S.vista && mutationVersion === S.mutationVersion && r.ok && Array.isArray(d.ruoli)) {
+      RuoliDB = d.ruoli.map(({ nome, gruppo, attivo }) => ({ nome, gruppo: gruppo || nome, attivo }));
       ricalcolaRuoli();
     }
   } catch (e) { console.warn('loadRuoliDB:', e.message); }
@@ -626,6 +629,7 @@ async function toggleCompletato(fasciaId) {
         method: 'POST', headers: authHeaders(),
         body: JSON.stringify({ azione: 'segna_completato', ruolo: r, fasciaId, completato: !fatto })
       });
+      if (risposta.status === 401 && !isAdmin() && S.role === r) return revocaBadge();
       const dati = await risposta.json();
       if (!risposta.ok || !dati.ok) throw new Error(dati.errore || 'Salvataggio della tappa fallito.');
       if (S.role !== r) return;
@@ -827,7 +831,7 @@ function preparaRegia(fasce, ruoli, completamenti, ora, eventoAttivo) {
       : adesso < limitePrevisto ? 'ora' : 'passata';
     const conteggi = { previsti: 0, completati: 0, attesa: 0, ritardo: 0, inattivi: 0 };
 
-    const righe = ruoli.filter(r => r?.nome).map(ruolo => {
+    const righe = ruoli.filter(r => r?.nome && r.attivo !== false).map(ruolo => {
       const assegnazione = personalizzazionePer(fase, ruolo.nome, ruolo.gruppo || '');
       const inattivo = assegnazione?.nessunaAttivita === true;
       const completato = (completamenti[ruolo.nome] || []).includes(fase.id);
@@ -954,6 +958,12 @@ function renderRegia(contenitore) {
 }
 
 /* ---------- Schermata 4: Timeline Utente ---------- */
+const sezioniStaff = [
+  { id: 'task', nome: 'Task', icona: 'check' },
+  { id: 'laboratori', nome: 'Laboratori', icona: 'pin', immagine: 'piantina-laboratori.png', altezza: 737 },
+  { id: 'fase-libera', nome: 'Fase libera', icona: 'route', immagine: 'piantina-fase-libera.png', altezza: 760 }
+];
+
 async function showTimeline() {
   fermaInterazioni();
   const vista = S.vista;
@@ -961,13 +971,65 @@ async function showTimeline() {
   screen.innerHTML = `<header class="top staff-top">${marchio()}<div class="live-clock"><span>ORA LOCALE</span><b id="clock"></b></div></header>
     <div class="wrap staff-wrap">
       <div class="staff-heading"><div><span class="eyebrow">IL TUO RUOLO</span><h1>${esc(S.role || 'Staff')}</h1><p class="mut">${esc(gruppo() || 'Squadra Open Day')}</p></div><button class="chip" id="chg">Cambia badge</button></div>
-      <div id="banner"><div class="banner warn staff-status" role="status">Verifica dello stato dell’evento...</div></div>
-      <section id="staffFocus" aria-label="La tua prossima fase" hidden></section>
-      <h2 class="program-heading" id="staffProgramHeading" hidden>Le tappe della serata <span>IN ORDINE DI ORARIO</span></h2>
-      <ol class="tl" id="tl" hidden></ol>
+      <div class="tabs staff-tabs" id="staffTabs" role="tablist" aria-label="Sezioni del ruolo" hidden>
+        ${sezioniStaff.map(({ id, nome, icona: simbolo }, i) => `<button type="button" role="tab"
+          class="tab-btn ${i === 0 ? 'active' : ''}" id="staff-tab-${id}" aria-controls="staff-panel-${id}"
+          aria-selected="${i === 0}" tabindex="${i === 0 ? 0 : -1}">${icona(simbolo)}<span>${nome}</span></button>`).join('')}
+      </div>
+      <section id="staff-panel-task" role="tabpanel" aria-labelledby="staff-tab-task" tabindex="0">
+        <div id="banner"><div class="banner warn staff-status" role="status">Verifica dello stato dell’evento...</div></div>
+        <section id="staffFocus" aria-label="La tua prossima fase" hidden></section>
+        <h2 class="program-heading" id="staffProgramHeading" hidden>Le tappe della serata <span>IN ORDINE DI ORARIO</span></h2>
+        <ol class="tl" id="tl" hidden></ol>
+      </section>
+      ${sezioniStaff.slice(1).map(({ id, nome, immagine, altezza }) => `<section id="staff-panel-${id}" class="staff-map"
+        role="tabpanel" aria-labelledby="staff-tab-${id}" hidden>
+        <button class="btn ghost" type="button" id="zoom-${id}" aria-controls="map-${id}">Ingrandisci piantina</button>
+        <div class="map-viewport" id="map-${id}" role="region" aria-label="Piantina: ${nome}" tabindex="0">
+          <img src="${immagine}" alt="Piantina della scuola per la fase ${nome}" width="1100" height="${altezza}" loading="lazy">
+        </div>
+      </section>`).join('')}
     </div>`;
 
   $('#chg').onclick = showRoles;
+
+  function selezionaTab(id) {
+    for (const sezione of sezioniStaff) {
+      const attiva = sezione.id === id;
+      const tab = $('#staff-tab-' + sezione.id);
+      tab.className = 'tab-btn' + (attiva ? ' active' : '');
+      tab.setAttribute?.('aria-selected', String(attiva));
+      tab.tabIndex = attiva ? 0 : -1;
+      $('#staff-panel-' + sezione.id).hidden = !attiva;
+    }
+  }
+
+  sezioniStaff.forEach(({ id, immagine }, i) => {
+    const tab = $('#staff-tab-' + id);
+    tab.onclick = () => selezionaTab(id);
+    tab.onkeydown = e => {
+      const ultima = sezioniStaff.length - 1;
+      const destinazione = { ArrowLeft: (i + ultima) % sezioniStaff.length,
+        ArrowRight: (i + 1) % sezioniStaff.length, Home: 0, End: ultima }[e.key];
+      if (destinazione === undefined) return;
+      e.preventDefault();
+      const prossimo = sezioniStaff[destinazione].id;
+      selezionaTab(prossimo);
+      $('#staff-tab-' + prossimo).focus();
+    };
+    if (!immagine) return;
+    const zoom = $('#zoom-' + id);
+    const mappa = $('#map-' + id);
+    zoom.onclick = () => {
+      const ingrandita = mappa.classList.toggle('is-zoomed');
+      zoom.textContent = ingrandita ? 'Adatta allo schermo' : 'Ingrandisci piantina';
+      if (!ingrandita) mappa.scrollTo(0, 0);
+    };
+  });
+  const mostraSezioni = d => {
+    $('#staffTabs').hidden = Boolean(d.offline || d.demo);
+    if ($('#staffTabs').hidden) selezionaTab('task');
+  };
 
   $('#clock').innerHTML = fmtOrologio(new Date());
   clearInterval(S.timer); S.timer = setInterval(batto, 1000);
@@ -976,11 +1038,13 @@ async function showTimeline() {
   if (d.revocato || d.stale || S.vista !== vista) return;
   inCorso = false;
 
+  mostraSezioni(d);
   renderStatoTimeline(d, true);
   avviaRefresh(120000, async valida => {
     if (salvataggioTappa) return;
     const aggiornati = await carica();
     if (!valida() || aggiornati.revocato || aggiornati.stale) return;
+    mostraSezioni(aggiornati);
     renderStatoTimeline(aggiornati, false);
   });
 }
@@ -1336,7 +1400,7 @@ async function showAdmin() {
       banner.textContent = aggiornati.offline ? `${aggiornati.errore} I dati potrebbero non essere aggiornati.` : '';
     }
     if (S.tabAdmin === 'modifica' && mantieniBozza) return;
-    if (S.tabAdmin === 'ruoli' && bozzaForm) return;
+    if (S.tabAdmin === 'ruoli' && (bozzaForm || S.operazioneAdmin)) return;
     renderTab();
   });
 }
@@ -1551,7 +1615,7 @@ async function renderRuoli(c) {
 
   const aggiornaLista = lista => {
     ruoli = lista;
-    RuoliDB = ruoli.map(r => ({ nome: r.nome, gruppo: r.gruppo || r.nome }));
+    RuoliDB = ruoli.map(({ nome, gruppo, attivo }) => ({ nome, gruppo: gruppo || nome, attivo }));
     ricalcolaRuoli();
   };
   aggiornaLista(ruoli);
@@ -1587,13 +1651,15 @@ async function renderRuoli(c) {
       ruoli.forEach((r, i) => {
         const link = urlBadge(r.badge);
         html += `<li class="fz">
-          <div class="riga">
-            <div style="flex:1; min-width:0">
-              <b>${esc(r.nome)}</b>
+          <div class="riga role-row">
+            <div>
+              <b>${esc(r.nome)}</b> <span class="badge-status ${r.attivo === false ? 'idle' : 'ok'}" data-stato-ruolo>${r.attivo === false ? 'Disabilitato' : 'Abilitato'}</span>
               ${r.gruppo && r.gruppo !== r.nome ? `<small class="mut"> — gruppo: ${esc(r.gruppo)}</small>` : ''}
               <br><code style="font-size:0.78rem; color:var(--text-muted); word-break:break-all">${esc(r.badge)}</code>
             </div>
             <div class="btnx" style="gap:6px; flex-wrap:wrap">
+              <button type="button" class="btn ghost role-toggle" data-stato-nome="${esc(r.nome)}"
+                data-attivo="${r.attivo !== false}" aria-label="${r.attivo === false ? 'Abilita' : 'Disabilita'} ${esc(r.nome)}">${r.attivo === false ? 'Abilita' : 'Disabilita'}</button>
               <button class="btn ghost" style="font-size:0.8rem; padding:4px 10px" data-qr="${esc(r.badge)}" data-link="${esc(link)}">QR</button>
               <button class="btn ghost" style="font-size:0.8rem; padding:4px 10px" data-rigenera="${esc(r.nome)}" data-i="${i}">Rigenera</button>
             </div>
@@ -1720,6 +1786,40 @@ async function renderRuoli(c) {
       } catch (x) { err.textContent = x.message; avvisa(x.message, true); }
       finally { pronto(btn); }
     };
+
+    c.querySelectorAll('[data-stato-nome]').forEach(btn => {
+      btn.onclick = async () => {
+        if (S.operazioneAdmin) return;
+        const nome = btn.dataset.statoNome;
+        const attivo = btn.dataset.attivo === 'false';
+        S.operazioneAdmin = true;
+        S.mutationVersion++;
+        attesa(btn, 'Salvo...');
+        try {
+          const risposta = await chiedi(CFG.API + '/admin', {
+            method: 'POST', headers: authHeaders(),
+            body: JSON.stringify({ azione: 'ruoli_stato', nome, attivo })
+          });
+          const dati = await risposta.json();
+          if (!risposta.ok) throw new Error(dati.errore || 'Impossibile salvare lo stato del ruolo.');
+          if (!btn.isConnected) return;
+          aggiornaLista(dati.ruoli);
+          btn.dataset.attivo = String(attivo);
+          const azione = attivo ? 'Disabilita' : 'Abilita';
+          btn.dataset.t = azione;
+          btn.setAttribute('aria-label', `${azione} ${nome}`);
+          const stato = btn.closest('li').querySelector('[data-stato-ruolo]');
+          stato.className = 'badge-status ' + (attivo ? 'ok' : 'idle');
+          stato.textContent = attivo ? 'Abilitato' : 'Disabilitato';
+          avvisa(`Ruolo “${nome}” ${stato.textContent.toLowerCase()}.`);
+        } catch (e) { avvisa(e.message, true); }
+        finally {
+          S.operazioneAdmin = false;
+          S.mutationVersion++;
+          pronto(btn);
+        }
+      };
+    });
 
     // Rigenera badge
     c.querySelectorAll('[data-rigenera]').forEach(btn => {
